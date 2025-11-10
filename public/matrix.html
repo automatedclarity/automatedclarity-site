@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ACX Matrix — Dashboard</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root { --fg:#0b1220; --muted:#6b7280; --line:#e5e7eb; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color:var(--fg); margin:24px; }
+    h1 { margin:0 0 10px; }
+    .bar { display:flex; gap:12px; align-items:center; margin: 10px 0 18px; flex-wrap: wrap; }
+    input, button { padding:8px 10px; font-size:14px; }
+    input[type="password"], input[type="number"] { border:1px solid var(--line); border-radius:8px; }
+    button { border:1px solid var(--line); border-radius:8px; background:white; cursor:pointer; }
+    .meta { color:var(--muted); font-size:13px; }
+    .grid { display:grid; grid-template-columns: 180px 210px 210px 110px 110px 110px 110px 130px 220px; gap:8px; }
+    .row { padding:10px 8px; border-bottom:1px solid var(--line); }
+    .head { font-weight:700; position: sticky; top: 0; background: #fff; }
+    .pill { padding:2px 8px; border-radius:999px; font-size:12px; }
+    .ok { background:#e8faf0; }
+    .degraded { background:#fff6df; }
+    .critical { background:#ffe9e9; }
+  </style>
+</head>
+<body>
+  <h1>ACX Matrix — Recent Ingests</h1>
+  <div class="bar">
+    <label>Secret <input id="sec" type="password" placeholder="x-acx-secret" /></label>
+    <label>Limit <input id="lim" type="number" value="100" min="1" max="200" style="width:80px" /></label>
+    <button id="load">Load</button>
+    <span class="meta" id="meta"></span>
+  </div>
+
+  <div class="grid head row">
+    <div>Timestamp</div><div>Account</div><div>Location</div>
+    <div>Uptime</div><div>Conversion</div><div>Resp (ms)</div>
+    <div>Quotes</div><div>Integrity</div><div>Run ID</div>
+  </div>
+  <div id="rows"></div>
+
+  <script>
+    const $ = (id)=>document.getElementById(id);
+    const fmt = (v)=> (v===undefined||v===null||v==="") ? "—" : v;
+    const pill = (s)=> `<span class="pill ${String(s).toLowerCase()}">${s}</span>`;
+    async function load() {
+      const secret = $("sec").value.trim();
+      const limit = Math.max(1, Math.min(200, Number($("lim").value)||100));
+      const r = await fetch(`/.netlify/functions/acx-matrix-recent?limit=${limit}`, { headers: { "x-acx-secret": secret }});
+      if (!r.ok) { alert("Auth failed or API error"); return; }
+      const { items, events, count } = await r.json(); // supports either shape
+      const data = events || items || [];
+      $("meta").textContent = `${data.length} row(s)`;
+      const rows = $("rows"); rows.innerHTML = "";
+      for (const it of data) {
+        const d = document.createElement("div"); d.className = "grid row";
+        d.innerHTML = `
+          <div>${new Date(it.ts || Date.now()).toLocaleString()}</div>
+          <div>${fmt(it.account)}</div>
+          <div>${fmt(it.location)}</div>
+          <div>${fmt(it.uptime)}</div>
+          <div>${fmt(it.conversion)}</div>
+          <div>${fmt(it.response_ms)}</div>
+          <div>${fmt(it.quotes_recovered)}</div>
+          <div>${it.integrity ? pill(it.integrity) : "—"}</div>
+          <div>${fmt(it.run_id)}</div>`;
+        rows.appendChild(d);
+      }
+    }
+    $("load").addEventListener("click", load);
+  </script>
+</body>
+</html>
