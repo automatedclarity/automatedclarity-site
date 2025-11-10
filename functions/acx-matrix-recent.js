@@ -1,32 +1,41 @@
-import { Blobs } from '@netlify/blobs'
+import { getStore } from "@netlify/blobs";
 
-const STORE = process.env.ACX_BLOBS_STORE || 'acx-matrix'
-const PFX   = 'events/'  // <- same prefix
+const STORE = process.env.ACX_BLOBS_STORE || "acx-matrix";
+const PFX = "events/"; // must match writer
 
 export default async (req) => {
-  // auth (unchanged)
+  // auth (same as your other functions)
+  const secret = req.headers.get("x-acx-secret") || "";
+  if (!secret || secret !== (process.env.ACX_WEBHOOK_SECRET || "")) {
+    return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), {
+      status: 401, headers: { "content-type": "application/json" }
+    });
+  }
 
-  const url = new URL(req.url)
-  const limit = Math.max(1, Math.min(100, Number(url.searchParams.get('limit') || 10)))
+  // ?limit=
+  let limit = 10;
+  try {
+    const n = Number(new URL(req.url).searchParams.get("limit") || "");
+    if (!Number.isNaN(n) && n > 0 && n <= 100) limit = n;
+  } catch {}
 
-  const blobs = new Blobs({ siteID: process.env.NETLIFY_SITE_ID })
+  const store = getStore({ name: STORE });
 
-  // List keys with the SAME prefix used by the writer
-  const { blobs: items } = await blobs.list({ storeName: STORE, prefix: PFX, cursor: undefined, limit: 500 })
+  // list keys under the SAME prefix
+  const { blobs } = await store.list({ prefix: PFX, limit: 500 });
+  console.info("MATRIX_READ " + JSON.stringify({ store: STORE, found: blobs.length }));
 
-  console.info('MATRIX_READ', { store: STORE, prefix: PFX, found: items.length }) // <— debug
+  // newest first by key (timestamp prefix)
+  blobs.sort((a, b) => (a.key < b.key ? 1 : -1));
+  const pick = blobs.slice(0, limit);
 
-  // newest first
-  items.sort((a, b) => (a.key < b.key ? 1 : -1))
-
-  const picked = items.slice(0, limit)
-  const events = []
-  for (const it of picked) {
-    const json = await blobs.get(it.key, { storeName: STORE })
-    try { events.push(JSON.parse(await json.text())) } catch {}
+  const events = [];
+  for (const it of pick) {
+    const res = await store.get(it.key, { type: "json" });
+    if (res) events.push(res);
   }
 
   return new Response(JSON.stringify({ ok: true, count: events.length, events }), {
-    headers: { 'Content-Type': 'application/json' }
-  })
-}
+    headers: { "content-type": "application/json" }
+  });
+};
