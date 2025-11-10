@@ -1,36 +1,43 @@
-import { Blobs } from '@netlify/blobs'
+import { checkAuth, unauthorized, methodNotAllowed } from "./_lib/auth.js";
+import { normalize } from "./_lib/shape.js";
+import { getStore } from "@netlify/blobs";
 
-const STORE = process.env.ACX_BLOBS_STORE || 'acx-matrix'
-const PFX   = 'events/'  // <- shared prefix
+const STORE = process.env.ACX_BLOBS_STORE || "acx-matrix";
+const PFX = "events/"; // must match reader
 
 export default async (req) => {
-  if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 })
+  if (req.method !== "POST") return methodNotAllowed();
+  if (!checkAuth(req)) return unauthorized();
 
-  // auth (unchanged)
-  // ... your existing checkAuth/unauthorized calls ...
+  let body = {};
+  try { body = await req.json(); } catch {}
+  const data = normalize(body);
 
-  let body = {}; try { body = await req.json(); } catch {}
-  const cd = body.customData || body || {}
+  // 1) normal log
+  console.info("MATRIX_INGEST " + JSON.stringify({
+    account: data.account,
+    location: data.location,
+    uptime: data.uptime,
+    conversion: data.conversion,
+    response_ms: data.response_ms,
+    quotes_recovered: data.quotes_recovered,
+    integrity: data.integrity,
+    run_id: data.run_id
+  }));
 
-  const event = {
-    account: cd.account_name || '',
-    location: cd.location_id || '',
-    uptime: cd.uptime || '',
-    conversion: cd.conversion || '',
-    response_ms: cd.response_ms || '',
-    quotes_recovered: cd.quotes_recovered || '',
-    integrity: cd.integrity || '',
-    run_id: cd.run_id || '',
-    ts: new Date().toISOString()
+  // 2) persist to Blobs
+  try {
+    const store = getStore({ name: STORE });
+    const key = `${PFX}${Date.now()}-${Math.random().toString(36).slice(2,8)}.json`;
+    const event = { ts: new Date().toISOString(), ...data };
+    await store.set(key, JSON.stringify(event), { contentType: "application/json" });
+    console.info("MATRIX_WRITE " + JSON.stringify({ store: STORE, key }));
+  } catch (e) {
+    console.warn("MATRIX_STORE_FAIL " + (e?.message || String(e)));
   }
 
-  const blobs = new Blobs({ siteID: process.env.NETLIFY_SITE_ID })
-  const key = `${PFX}${Date.now()}-${Math.random().toString(36).slice(2)}.json`
-  await blobs.set(key, JSON.stringify(event), { storeName: STORE, contentType: 'application/json' })
-
-  console.info('MATRIX_WRITE', { store: STORE, prefix: PFX, key }) // <— debug
-
-  return new Response(JSON.stringify({ ok: true, message: 'Matrix data received' }), {
-    headers: { 'Content-Type': 'application/json' }
-  })
-}
+  return new Response(JSON.stringify({ ok: true, message: "Matrix data received" }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" }
+  });
+};
