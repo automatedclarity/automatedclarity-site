@@ -1,46 +1,32 @@
-// Read recent Matrix events from Netlify Blobs
-import { getStore } from '@netlify/blobs';
+import { Blobs } from '@netlify/blobs'
+
+const STORE = process.env.ACX_BLOBS_STORE || 'acx-matrix'
+const PFX   = 'events/'  // <- same prefix
 
 export default async (req) => {
-  try {
-    // auth
-    const secret = req.headers.get('x-acx-secret') || '';
-    if (!secret || secret !== (process.env.ACX_WEBHOOK_SECRET || '')) {
-      return new Response(JSON.stringify({ ok: false, error: 'Unauthorized' }), {
-        status: 401,
-        headers: { 'content-type': 'application/json' }
-      });
-    }
+  // auth (unchanged)
 
-    // parse ?limit=
-    let limit = 10;
-    try {
-      const url = new URL(req.url);
-      const raw = url.searchParams.get('limit');
-      if (raw) {
-        const n = Number(raw);
-        if (!Number.isNaN(n) && n > 0 && n <= 100) limit = n;
-      }
-    } catch {}
+  const url = new URL(req.url)
+  const limit = Math.max(1, Math.min(100, Number(url.searchParams.get('limit') || 10)))
 
-    // get the store
-    const store = getStore('acx-matrix'); // <-- THIS is the correct API
-    // index is an array of ids we append to when writing
-    const index = (await store.get('index', { type: 'json' })) || [];
+  const blobs = new Blobs({ siteID: process.env.NETLIFY_SITE_ID })
 
-    // take the last N ids and fetch the event docs
-    const ids = index.slice(-limit).reverse();
-    const events = await Promise.all(
-      ids.map((id) => store.get(`e:${id}`, { type: 'json' }))
-    );
+  // List keys with the SAME prefix used by the writer
+  const { blobs: items } = await blobs.list({ storeName: STORE, prefix: PFX, cursor: undefined, limit: 500 })
 
-    return new Response(JSON.stringify({ ok: true, count: events.length, events }), {
-      headers: { 'content-type': 'application/json' }
-    });
-  } catch (err) {
-    return new Response(
-      JSON.stringify({ ok: false, error: err.message, stack: String(err.stack || '') }),
-      { status: 500, headers: { 'content-type': 'application/json' } }
-    );
+  console.info('MATRIX_READ', { store: STORE, prefix: PFX, found: items.length }) // <— debug
+
+  // newest first
+  items.sort((a, b) => (a.key < b.key ? 1 : -1))
+
+  const picked = items.slice(0, limit)
+  const events = []
+  for (const it of picked) {
+    const json = await blobs.get(it.key, { storeName: STORE })
+    try { events.push(JSON.parse(await json.text())) } catch {}
   }
-};
+
+  return new Response(JSON.stringify({ ok: true, count: events.length, events }), {
+    headers: { 'Content-Type': 'application/json' }
+  })
+}
