@@ -1,5 +1,5 @@
 // /functions/acx-matrix-summary.js
-import { checkAuth, unauthorized, methodNotAllowed } from "./_lib/auth.js";
+import { requireAuth } from "./_lib/session.js";
 import { getStore } from "@netlify/blobs";
 
 // Tunables
@@ -10,8 +10,11 @@ const DEFAULT_LIMIT = 100;                  // max recent rows to return
 const SERIES_POINTS = 50;                   // per-location series length
 
 export default async (req) => {
-  if (req.method !== "GET") return methodNotAllowed();
-  if (!checkAuth(req)) return unauthorized();
+  if (req.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+  const guard = requireAuth(req);
+  if (guard) return new Response("Unauthorized", { status: 401 });
 
   const url = new URL(req.url);
   const limit = Math.min(
@@ -23,14 +26,11 @@ export default async (req) => {
 
   // Pull recent blobs by pages until we have enough
   let cursor = undefined;
-  const recent = [];
   const all = [];
 
-  while (recent.length < limit && all.length < MAX_SCAN) {
+  while (all.length < MAX_SCAN) {
     const page = await store.list({ prefix: KEY_PREFIX, cursor, limit: 200 });
-    for (const b of page.blobs || []) {
-      all.push(b);
-    }
+    for (const b of page.blobs || []) all.push(b);
     cursor = page.cursor;
     if (!cursor) break;
   }
@@ -38,42 +38,40 @@ export default async (req) => {
   // Sort newest first by uploadedAt (ISO)
   all.sort((a, b) => (b.uploadedAt > a.uploadedAt ? 1 : -1));
 
-  // Fetch bodies for the top N
+  // Fetch bodies for the top N (for the "recent" table)
   const top = all.slice(0, Math.min(limit, all.length));
   const rows = [];
   for (const b of top) {
-    const res = await store.get(b.key);
-    if (!res) continue;
-    try { rows.push(await res.json()); } catch(e) {}
+    try {
+      const v = await store.get(b.key, { type: "json" });
+      if (v) rows.push(v);
+    } catch {}
   }
 
-  // Per-location latest + series (using first MAX_SCAN bodies we scanned)
-  const seriesMap = new Map(); // loc -> [{ts, uptime, conv, resp, quotes, integrity}]
-  const latestMap = new Map();
-
-  // Build a cache from the first ~MAX_SCAN blobs
-  for (const b of all.slice(0, MAX_SCAN)) {
-    if (!seriesMap.has(b.key)) { /* noop, we’ll fetch lazily */ }
-  }
-
-  // Lazy streaming: walk again, but stop when you filled each location
+  // Build latest snapshot per location + time series
+  const seriesMap = new Map();  // loc -> [{ts, uptime, conv, resp, quotes, integrity}]
+  const latestMap = new Map();  // loc -> latest row
   const seenSeriesCounts = new Map();
 
-  for (const b of all) {
-    const res = await store.get(b.key);
-    if (!res) continue;
+  for (const b of all.slice(0, MAX_SCAN)) {
     let item;
-    try { item = await res.json(); } catch(e) { continue; }
+    try {
+      item = await store.get(b.key, { type: "json" });
+    } catch {
+      continue;
+    }
+    if (!item) continue;
 
     const loc = item.location || item.location_id || "unknown";
     const acc = item.account || item.account_name || "unknown";
-    const sKey = loc;
+    const ts  = item.ts || b.uploadedAt;
 
+    // Latest snapshot per location (first encounter after sort is newest)
     if (!latestMap.has(loc)) {
       latestMap.set(loc, {
         location: loc,
         account: acc,
-        last_seen: item.ts || b.uploadedAt,
+        last_seen: ts,
         uptime: Number(item.uptime || 0),
         conversion: Number(item.conversion || 0),
         response_ms: Number(item.response_ms || 0),
@@ -82,25 +80,26 @@ export default async (req) => {
       });
     }
 
-    if (!seriesMap.has(sKey)) seriesMap.set(sKey, []);
-    if (!seenSeriesCounts.has(sKey)) seenSeriesCounts.set(sKey, 0);
+    // Series (cap per location)
+    if (!seriesMap.has(loc)) seriesMap.set(loc, []);
+    if (!seenSeriesCounts.has(loc)) seenSeriesCounts.set(loc, 0);
 
-    const count = seenSeriesCounts.get(sKey);
+    const count = seenSeriesCounts.get(loc);
     if (count < SERIES_POINTS) {
-      seriesMap.get(sKey).push({
-        ts: item.ts || b.uploadedAt,
+      seriesMap.get(loc).push({
+        ts,
         uptime: Number(item.uptime || 0),
         conv: Number(item.conversion || 0),
         resp: Number(item.response_ms || 0),
         quotes: Number(item.quotes_recovered || 0),
         integrity: (item.integrity || "").toLowerCase()
       });
-      seenSeriesCounts.set(sKey, count + 1);
+      seenSeriesCounts.set(loc, count + 1);
     }
 
-    // Stop if all series reached cap and we already have enough recent rows
+    // Early exit if all series filled and we already fetched recent rows
     let doneSeries = true;
-    for (const [_k, v] of seenSeriesCounts) if (v < SERIES_POINTS) { doneSeries = false; break; }
+    for (const [_k, v] of seenSeriesCounts) { if (v < SERIES_POINTS) { doneSeries = false; break; } }
     if (doneSeries && rows.length >= limit) break;
   }
 
@@ -136,5 +135,5 @@ export default async (req) => {
     recent: outRows,
     locations,
     series: Object.fromEntries(seriesMap), // { [location]: [{ts,uptime,conv,resp,quotes,integrity}] }
-  }), { headers: { "Content-Type": "application/json" } });
+  }), { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
 };
