@@ -1,53 +1,48 @@
-// functions/_lib/session.js
 import crypto from "node:crypto";
 
-const COOKIE_NAME = "acx_session";
-const MAX_AGE_SECONDS = 60 * 60 * 24 * 30; // 30 days
+const NAME = "ACX_DASH_SESSION";
+const MAX_AGE = 60 * 60 * 24 * 30; // 30d
 
-function b64url(buf) {
-  return Buffer.from(buf).toString("base64")
-    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+export function cookieName(){ return NAME; }
+
+function sign(payload, key){
+  const h = crypto.createHmac("sha256", key).update(payload).digest("base64url");
+  return `${payload}.${h}`;
+}
+function verify(token, key){
+  if (!token || !token.includes(".")) return null;
+  const [payload, sig] = token.split(".");
+  const expect = crypto.createHmac("sha256", key).update(payload).digest("base64url");
+  if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expect))) return null;
+  try { return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")); }
+  catch { return null; }
 }
 
-function sign(iat, key) {
-  const h = crypto.createHmac("sha256", key);
-  h.update(String(iat));
-  return b64url(h.digest());
+export function setCookie(value){
+  return [
+    `${NAME}=${value}`,
+    "Path=/",
+    "HttpOnly",
+    "Secure",
+    "SameSite=Lax",
+    `Max-Age=${MAX_AGE}`
+  ].join("; ");
 }
-
-export function makeSessionCookie(key) {
-  const iat = Math.floor(Date.now() / 1000);
-  const sig = sign(iat, key);
-  const val = `${iat}.${sig}`;
-  return `${COOKIE_NAME}=${val}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${MAX_AGE_SECONDS}`;
+export function clearCookie(){
+  return [`${NAME}=`, "Path=/", "HttpOnly", "Secure", "SameSite=Lax", "Max-Age=0"].join("; ");
 }
-
-export function clearSessionCookie() {
-  return `${COOKIE_NAME}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
+export function createSession(sub){
+  const exp = Math.floor(Date.now()/1000) + MAX_AGE;
+  const payload = Buffer.from(JSON.stringify({ sub, exp }), "utf8").toString("base64url");
+  return sign(payload, process.env.ACX_SESSION_KEY || "");
 }
-
-export function verifySessionCookie(req, key) {
-  const raw = req.headers.get("cookie") || "";
-  const m = raw.match(new RegExp(`${COOKIE_NAME}=([^;]+)`));
-  if (!m) return false;
-
-  const [iatStr, sig] = m[1].split(".");
-  if (!iatStr || !sig) return false;
-
-  const expected = sign(iatStr, key);
-  const ok = crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
-  if (!ok) return false;
-
-  const iat = parseInt(iatStr, 10) || 0;
-  const age = Math.floor(Date.now() / 1000) - iat;
-  return age >= 0 && age <= MAX_AGE_SECONDS;
-}
-
-// Guard usable inside any function
-export function requireAuth(req) {
-  const KEY = process.env.ACX_SESSION_KEY || "";
-  if (!verifySessionCookie(req, KEY)) {
-    return new Response("Unauthorized", { status: 401 });
-  }
-  return null; // authorized
+export function readSession(req){
+  const key = process.env.ACX_SESSION_KEY || "";
+  const cookie = (req.headers.get("cookie")||"").split(/;\s*/).find(c=>c.startsWith(`${NAME}=`));
+  if (!cookie) return null;
+  const token = cookie.slice(NAME.length+1);
+  const data = verify(token, key);
+  if (!data) return null;
+  if (data.exp && data.exp < Math.floor(Date.now()/1000)) return null;
+  return data;
 }
