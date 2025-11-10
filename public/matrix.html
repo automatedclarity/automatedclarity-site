@@ -3,9 +3,8 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>ACX Matrix — Dashboard</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
   <style>
     body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 0; background: #0b1220; color: #e6edf6; }
     .wrap { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
@@ -13,32 +12,30 @@
     .muted { color: #96a3b7; }
     input, button, select { font: inherit; }
     input[type="password"], input[type="text"], input[type="number"] {
-      background: #0f1629; border: 1px solid #1c2640; color:#e6edf6; border-radius: 10px; padding: 10px 12px;
+      background:#0f1629; border:1px solid #1c2640; color:#e6edf6; border-radius:10px; padding:10px 12px;
     }
-    button {
-      background: #1b69ff; border: none; color: white; padding: 10px 14px; border-radius: 10px; cursor: pointer; font-weight: 700;
-    }
-    button:disabled { opacity: .6; cursor: default; }
-    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-    .cards { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; margin: 16px 0 8px; }
-    .card { background: #0f1629; border:1px solid #1c2640; border-radius: 14px; padding: 14px; }
-    .k { font-size: 12px; color: #9fb0cc; }
-    .v { font-size: 22px; font-weight: 800; margin-top: 4px; }
-    .grid { display: grid; grid-template-columns: 220px 120px 120px 120px 1fr 120px; gap: 8px; }
-    .locrow { background:#0f1629; border:1px solid #1c2640; border-radius: 12px; padding: 12px; align-items: center; }
-    .badge { padding: 4px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; display: inline-block; }
-    .b-opt { background: #0d2a13; color: #39d353; border: 1px solid #1d4e26; }
-    .b-deg { background: #2b1d0d; color: #ffb224; border: 1px solid #4e3a1d; }
-    .b-crit{ background: #2a0d0d; color: #ff5f56; border: 1px solid #4e1d1d; }
-    .b-unk { background: #1a1f2b; color: #9fb0cc; border: 1px solid #273149; }
-    table { width: 100%; border-collapse: collapse; margin-top: 18px; }
-    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #1c2640; }
-    th { color:#9fb0cc; font-weight: 600; }
-    .right { text-align: right; }
-    .spark { width: 100%; height: 42px; }
-    .controls { gap: 10px; margin-top: 10px; }
-    .pill { display: inline-flex; align-items: center; gap: 8px; background:#0f1629;border:1px solid #1c2640;border-radius:999px;padding:8px 12px;}
-    .small { font-size: 12px; color:#9fb0cc; }
+    button { background:#1b69ff; border:none; color:white; padding:10px 14px; border-radius:10px; cursor:pointer; font-weight:700; }
+    button:disabled { opacity:.6; cursor:default; }
+    .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    .cards { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:12px; margin:16px 0 8px; }
+    .card { background:#0f1629; border:1px solid #1c2640; border-radius:14px; padding:14px; }
+    .k { font-size:12px; color:#9fb0cc; }
+    .v { font-size:22px; font-weight:800; margin-top:4px; }
+    .grid { display:grid; grid-template-columns:220px 120px 120px 120px 1fr 120px; gap:8px; }
+    .locrow { background:#0f1629; border:1px solid #1c2640; border-radius:12px; padding:12px; align-items:center; }
+    .badge { padding:4px 8px; border-radius:999px; font-size:12px; font-weight:700; display:inline-block; }
+    .b-opt { background:#0d2a13; color:#39d353; border:1px solid #1d4e26; }
+    .b-deg { background:#2b1d0d; color:#ffb224; border:1px solid #4e3a1d; }
+    .b-crit{ background:#2a0d0d; color:#ff5f56; border:1px solid #4e1d1d; }
+    .b-unk { background:#1a1f2b; color:#9fb0cc; border:1px solid #273149; }
+    table { width:100%; border-collapse:collapse; margin-top:18px; }
+    th, td { text-align:left; padding:10px 8px; border-bottom:1px solid #1c2640; }
+    th { color:#9fb0cc; font-weight:600; }
+    .right { text-align:right; }
+    .spark { width:100%; height:42px; }
+    .controls { gap:10px; margin-top:10px; }
+    .pill { display:inline-flex; align-items:center; gap:8px; background:#0f1629; border:1px solid #1c2640; border-radius:999px; padding:8px 12px; }
+    .small { font-size:12px; color:#9fb0cc; }
   </style>
 </head>
 <body>
@@ -70,10 +67,10 @@
     </div>
 
     <div class="cards">
-      <div class="card"><div class="k">Locations (by severity)</div><div class="v" id="c_locs">–</div></div>
-      <div class="card"><div class="k">Critical</div><div class="v" id="c_crit">–</div></div>
-      <div class="card"><div class="k">Degraded</div><div class="v" id="c_deg">–</div></div>
-      <div class="card"><div class="k">Optimal</div><div class="v" id="c_opt">–</div></div>
+      <div class="card"><div class="k">Locations (by severity)</div><div class="v" id="c_locs">—</div></div>
+      <div class="card"><div class="k">Critical</div><div class="v" id="c_crit">—</div></div>
+      <div class="card"><div class="k">Degraded</div><div class="v" id="c_deg">—</div></div>
+      <div class="card"><div class="k">Optimal</div><div class="v" id="c_opt">—</div></div>
     </div>
 
     <h3 style="margin:14px 0 8px">Locations</h3>
@@ -111,66 +108,51 @@ function sparkline(points, min, max, color="#7aa2ff") {
   </svg>`;
 }
 
+function getSecret() {
+  let s = localStorage.getItem('acx_secret') || '';
+  if (!s) {
+    s = ($("sec")?.value || '').trim();
+    if (!s) s = prompt('Enter your x-acx-secret') || '';
+  }
+  if (s) localStorage.setItem('acx_secret', s);
+  if ($("sec") && !$("sec").value) $("sec").value = s;
+  return s;
+}
+
 async function load() {
-  const secret = $("sec").value.trim();
+  const secret = getSecret();
   if (!secret) { alert("Enter secret"); return; }
   $("load").disabled = true;
 
   const limit = +$("lim").value || 100;
-  const res = await fetch("/.netlify/functions/acx-matrix-summary?limit="+limit, {
-    headers: { "x-acx-secret": secret }
-  });
-  const data = await res.json().catch(()=>({ok:false}));
 
+  // Use the confirmed-good endpoint for now
+  const res = await fetch("/.netlify/functions/acx-matrix-recent?limit=" + limit, {
+    headers: { "x-acx-secret": secret },
+    cache: "no-store"
+  });
+
+  let data = { ok:false };
+  try { data = await res.json(); } catch {}
   $("load").disabled = false;
+
   if (!data.ok) { alert("Fetch failed"); return; }
 
-  // Counters
-  const locs = data.locations || [];
-  const crit = locs.filter(l=>l.integrity==='critical').length;
-  const deg  = locs.filter(l=>l.integrity==='degraded').length;
-  const opt  = locs.filter(l=>l.integrity==='optimal').length;
-  $("c_locs").textContent = String(locs.length);
-  $("c_crit").textContent = String(crit);
-  $("c_deg").textContent  = String(deg);
-  $("c_opt").textContent  = String(opt);
-  $("meta").textContent   = `${(data.recent||[]).length} recent rows`;
+  // Counters (summary cards will light up once we wire the summary API)
+  const events = data.events || [];
+  $("c_locs").textContent = "—";
+  $("c_crit").textContent = "—";
+  $("c_deg").textContent  = "—";
+  $("c_opt").textContent  = "—";
+  $("meta").textContent   = `${events.length} recent rows`;
 
-  // Locations grid
-  const holder = $("locs");
-  holder.innerHTML = "";
-  locs.forEach(l => {
-    const series = (data.series && data.series[l.location]) || [];
-    const upts  = series.map(s=>Number(s.uptime||0));
-    const convs = series.map(s=>Number(s.conv||0));
-    const resps = series.map(s=>Number(s.resp||0));
-    const qts   = series.map(s=>Number(s.quotes||0));
-
-    const block = document.createElement("div");
-    block.className = "grid locrow";
-    block.innerHTML = `
-      <div>
-        <div style="font-weight:800">${l.account}</div>
-        <div class="muted small">${l.location}</div>
-      </div>
-      <div><span class="k">Uptime</span><div class="v">${Number(l.uptime||0).toFixed(1)}</div></div>
-      <div><span class="k">Conv</span><div class="v">${Number(l.conversion||0).toFixed(1)}</div></div>
-      <div><span class="k">Resp</span><div class="v">${Number(l.response_ms||0).toFixed(0)}</div></div>
-      <div>
-        <div class="k">Trends</div>
-        <div>${sparkline(upts, 0, 100, "#39d353")}</div>
-      </div>
-      <div style="text-align:right">
-        <span class="badge ${sevClass(l.integrity)}">${l.integrity}</span>
-      </div>
-    `;
-    holder.appendChild(block);
-  });
+  // Clear locations grid for now
+  $("locs").innerHTML = "";
 
   // Recent table
   const tbody = $("rows");
   tbody.innerHTML = "";
-  (data.recent||[]).forEach(r => {
+  events.forEach(r => {
     const tr = document.createElement("tr");
     const dt = r.ts ? new Date(r.ts) : null;
     tr.innerHTML = `
@@ -196,10 +178,16 @@ $("freq").addEventListener("change", () => {
   if (timer) clearInterval(timer);
   const s = +$("freq").value;
   if (s > 0) timer = setInterval(() => {
-    if ($("sec").value.trim()) load();
+    if (($("sec").value || localStorage.getItem('acx_secret') || '').trim()) load();
   }, s * 1000);
 });
-if ($("sec") && $("sec").value.trim()) load();
+
+// If a secret is already saved, prefill and auto-load once
+window.addEventListener("DOMContentLoaded", () => {
+  const saved = localStorage.getItem('acx_secret') || '';
+  if (saved && $("sec")) $("sec").value = saved;
+  if (saved) load();
+});
 </script>
 </body>
 </html>
