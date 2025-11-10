@@ -43,7 +43,7 @@ export function verifySessionCookie(req, key) {
   return age >= 0 && age <= MAX_AGE_SECONDS;
 }
 
-// Guard you can use inside functions
+// Guard usable inside any function
 export function requireAuth(req) {
   const KEY = process.env.ACX_SESSION_KEY || "";
   if (!verifySessionCookie(req, KEY)) {
