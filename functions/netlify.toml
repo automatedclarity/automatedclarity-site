@@ -1,0 +1,8 @@
+# netlify.toml — ACX Console
+[build]
+  command = ""
+  publish = "public"
+
+[functions]
+  directory = "functions"
+  node_bundler = "esbuild"
