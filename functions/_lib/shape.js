@@ -5,11 +5,10 @@ function firstDefined(...vals) {
 function toStr(v) {
   if (v === undefined || v === null) return "";
   if (typeof v === "object") {
-    // common GHL shapes like { id, name } or { value }
-    if ("id" in v && v.id !== undefined && v.id !== null && v.id !== "") return `${v.id}`;
-    if ("name" in v && v.name !== undefined && v.name !== null && v.name !== "") return `${v.name}`;
-    if ("value" in v && v.value !== undefined && v.value !== null && v.value !== "") return `${v.value}`;
-    return ""; // avoid "[object Object]" noise
+    if ("id" in v && v.id) return `${v.id}`;
+    if ("name" in v && v.name) return `${v.name}`;
+    if ("value" in v && v.value) return `${v.value}`;
+    return "";
   }
   return `${v}`;
 }
@@ -18,40 +17,49 @@ export function normalize(payload = {}) {
   const root = payload || {};
   const cd = root.customData || root.custom_data || root.custom || {};
 
+  // Note: GHL may send keys like "customData[uptime]" literally.
+  const cdKey = (k) => cd[k] ?? cd[`customData[${k}]`];
+
   const account = toStr(firstDefined(
-    cd.account_name, cd.account, root.account_name, root.account,
-    root.location?.name
+    cdKey("account_name"), root.account_name, root.account,
+    root["Account Name"], root.location?.name
   ));
 
   const location = toStr(firstDefined(
-    cd.location_id, root.location_id, root.locationId,
+    cdKey("location_id"), root.location_id, root.locationId,
     root.location?.id, root.location
   ));
 
   const uptime = toStr(firstDefined(
-    cd.uptime, cd.acx_matrix_uptime, root.acx_matrix_uptime, root.uptime
+    cdKey("uptime"), root.acx_matrix_uptime, root.uptime,
+    root["Uptime %"], root["ACX Matrix Uptime %"]
   ));
 
   const conversion = toStr(firstDefined(
-    cd.conversion, cd.acx_matrix_conversion, cd.acx_matrix_conversion_,
-    root.acx_matrix_conversion, root.acx_matrix_conversion_, root.conversion
+    cdKey("conversion"), root.acx_matrix_conversion, root.acx_matrix_conversion_,
+    root["ACX Matrix Conversion"], root["ACX Conversion"], root["Conversion %"]
   ));
 
   const response_ms = toStr(firstDefined(
-    cd.response_ms, cd.response_speed_ms, cd.response_time_ms,
-    root.response_ms, root.response_speed_ms, root.response_time_ms
+    cdKey("response_ms"), cdKey("response_speed_ms"), cdKey("response_time_ms"),
+    root.response_ms, root.response_speed_ms, root.response_time_ms,
+    root["Response Speed (ms)"], root["ACX Matrix Response Speed (ms)`"] // observed backtick
   ));
 
   const quotes_recovered = toStr(firstDefined(
-    cd.quotes_recovered, root.quotes_recovered
+    cdKey("quotes_recovered"), root.quotes_recovered, root["Quotes Recovered"],
+    root["ACX Matrix Quotes Recovered"]
   ));
 
   const integrity = toStr(firstDefined(
-    cd.integrity, cd.integrity_status, root.integrity, root.integrity_status
+    cdKey("integrity"), root.integrity, root.integrity_status,
+    root["Integrity Status"], root["Integrity Status (field)"],
+    root["ACX Matrix Integrity Status"]
   ));
 
   const run_id = toStr(firstDefined(
-    cd.run_id, cd.test_run_id, root.run_id, root.test_run_id
+    cdKey("run_id"), cdKey("test_run_id"), root.run_id, root.test_run_id,
+    root["Test Run ID"], root["ACX Matrix Test Run ID"]
   ));
 
   return { account, location, uptime, conversion, response_ms, quotes_recovered, integrity, run_id };
