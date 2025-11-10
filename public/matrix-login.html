@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>ACX Matrix — Login</title>
+<style>
+  body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;background:#0b1220;color:#e6edf6;display:grid;place-items:center;height:100vh;margin:0}
+  .card{background:#0f1629;border:1px solid #1c2640;border-radius:14px;padding:24px;min-width:320px}
+  input,button{font:inherit}
+  input{width:100%;padding:10px 12px;background:#0b1220;border:1px solid #1c2640;border-radius:10px;color:#e6edf6}
+  button{margin-top:12px;width:100%;padding:10px 14px;background:#1b69ff;border:0;border-radius:10px;color:#fff;font-weight:700;cursor:pointer}
+  .err{color:#ff7b7b;height:18px;margin-top:8px;font-size:13px}
+</style>
+</head>
+<body>
+  <div class="card">
+    <h2 style="margin:0 0 12px">ACX Matrix Login</h2>
+    <input id="pw" type="password" placeholder="Password" autofocus/>
+    <div id="err" class="err"></div>
+    <button id="go">Sign in</button>
+  </div>
+<script>
+  const $ = id => document.getElementById(id);
+  $("go").addEventListener("click", async () => {
+    $("err").textContent = "";
+    const password = $("pw").value.trim();
+    if (!password) { $("err").textContent = "Enter password"; return; }
+    const res = await fetch("/.netlify/functions/auth-login", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ password })
+    });
+    if (res.ok) location.href = "/matrix";
+    else $("err").textContent = "Invalid password";
+  });
+  document.addEventListener("keydown", (e)=>{ if(e.key==="Enter") $("go").click(); });
+</script>
+</body>
+</html>
