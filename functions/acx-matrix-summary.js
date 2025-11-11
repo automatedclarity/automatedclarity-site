@@ -1,16 +1,23 @@
-// Cookie-auth Summary for ACX Matrix Dashboard
+// functions/acx-matrix-summary.js
+// Accepts EITHER cookie-session (browser) OR x-acx-secret (CLI)
+// Reads recent events with prefix "event:" and builds locations + series.
+
 import { requireAuth } from "./_lib/session.js";
+import { checkAuth } from "./_lib/auth.js";
 import { getStore } from "@netlify/blobs";
 
 const STORE = process.env.ACX_BLOBS_STORE || "acx-matrix";
-const PFX   = "event:";           // MUST match writer
+const PFX = "event:";            // MUST match writer
 const DEFAULT_LIMIT = 100;
 const SERIES_POINTS = 50;
 
 export default async (req) => {
-  // Browser hits this with the acx_session cookie
-  const guard = requireAuth(req);
-  if (guard) return guard; // 401 JSON when not signed in
+  // auth: allow secret header OR cookie-session
+  const hasSecret = checkAuth(req);
+  if (!hasSecret) {
+    const guard = requireAuth(req);
+    if (guard) return guard; // 401 JSON when not signed in
+  }
 
   if (req.method !== "GET") {
     return new Response("Method Not Allowed", { status: 405 });
@@ -21,19 +28,21 @@ export default async (req) => {
 
   const store = getStore({ name: STORE });
 
-  // List newest-first
+  // list newest first
   const page = await store.list({ prefix: PFX, limit: 2000 });
   const blobs = (page.blobs || []).sort((a,b) => (b.uploadedAt > a.uploadedAt ? 1 : -1));
+  console.info("MATRIX_SUMMARY_LIST", { total: blobs.length });
 
-  // Recent rows (limited)
+  // recent rows
   const rows = [];
   for (const b of blobs.slice(0, limit)) {
     const r = await store.get(b.key);
     if (!r) continue;
     try { rows.push(await r.json()); } catch {}
   }
+  console.info("MATRIX_SUMMARY_RECENT", { count: rows.length });
 
-  // Build latest-per-location + time series
+  // latest per location + time series
   const latest = new Map();
   const series = new Map();
   const seen   = new Map();
