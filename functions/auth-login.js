@@ -1,18 +1,40 @@
 // functions/auth-login.js
-import { createSession, setCookie } from "./_lib/session.js";
+import { setSessionCookie } from "./_lib/session.js";
 
 export default async (req) => {
-  if (req.method !== "POST")
-    return new Response(JSON.stringify({ ok:false, error:"Method Not Allowed" }), { status:405 });
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
 
-  const body = await req.json().catch(()=> ({}));
-  const pass = String(body.password || "");
-  if (pass !== (process.env.ACX_DASH_PASS || ""))
-    return new Response(JSON.stringify({ ok:false, error:"Invalid password" }), { status:401 });
+  let body = {};
+  try { body = await req.json(); } catch {}
+  const password = (body && body.password) || "";
 
-  const token = createSession("dashboard");
-  return new Response(JSON.stringify({ ok:true }), {
+  const expected = (process.env.ACX_DASH_PASS || "").trim();
+  if (!expected) {
+    return new Response(JSON.stringify({ ok: false, error: "Server not configured" }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  if (!password || password !== expected) {
+    return new Response(JSON.stringify({ ok: false, error: "Invalid password" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  // Issue session cookie
+  const cookie = setSessionCookie(req);
+
+  return new Response(JSON.stringify({ ok: true }), {
     status: 200,
-    headers: { "Set-Cookie": setCookie(token), "Content-Type":"application/json" }
+    headers: {
+      "Content-Type": "application/json",
+      "Set-Cookie": cookie,
+      // optional: avoid caching auth responses
+      "Cache-Control": "no-store",
+    },
   });
 };
