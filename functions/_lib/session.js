@@ -1,22 +1,27 @@
 // functions/_lib/session.js
+// Session utils for ACX Console (Netlify Functions)
+// Exports: setSessionCookie, clearSessionCookie, hasSession, readSession, requireAuth
+
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 const COOKIE_NAME = "acx_session";
-const MAX_AGE_DAYS = 7; // session length
+const MAX_AGE_DAYS = 7; // session lifetime
 const MAX_AGE_SECS = MAX_AGE_DAYS * 24 * 60 * 60;
 
-// Base64url helpers
 const b64u = (buf) =>
-  Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  Buffer.from(buf)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+
 const fromB64u = (str) =>
   Buffer.from(str.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 
-// HMAC-SHA256(signingKey, payload)
 function signPayload(payload, key) {
   return createHmac("sha256", key).update(payload).digest();
 }
 
-// Build a compact token: base64url(json) + "." + base64url(hmac)
 function makeToken(claims, key) {
   const payload = b64u(Buffer.from(JSON.stringify(claims), "utf8"));
   const mac = b64u(signPayload(payload, key));
@@ -32,7 +37,6 @@ function verifyToken(token, key) {
   } catch {
     return null;
   }
-  // Expiry check (optional but recommended)
   if (claims.exp && Date.now() > claims.exp) return null;
 
   const expected = signPayload(payloadB64u, key);
@@ -46,22 +50,20 @@ function verifyToken(token, key) {
   return claims;
 }
 
-// Parse cookies from Request
 function getCookie(req, name) {
   const raw = req.headers.get("cookie") || "";
   const parts = raw.split(";").map((s) => s.trim());
   for (const p of parts) {
     if (!p) continue;
-    const eq = p.indexOf("=");
-    if (eq === -1) continue;
-    const k = p.slice(0, eq).trim();
+    const i = p.indexOf("=");
+    if (i === -1) continue;
+    const k = p.slice(0, i).trim();
     if (k !== name) continue;
-    return decodeURIComponent(p.slice(eq + 1));
+    return decodeURIComponent(p.slice(i + 1));
   }
   return null;
 }
 
-// Build Set-Cookie strings
 function cookieHeader(name, value, opts = {}) {
   const parts = [`${name}=${encodeURIComponent(value)}`];
   parts.push(`Path=${opts.path || "/"}`);
@@ -73,9 +75,8 @@ function cookieHeader(name, value, opts = {}) {
   return parts.join("; ");
 }
 
-// === Public API ===
+// ----- Public API -----
 
-// Returns a Set-Cookie string that sets a valid session
 export function setSessionCookie(req) {
   const key = process.env.ACX_SESSION_KEY || "";
   if (!key) throw new Error("ACX_SESSION_KEY not set");
@@ -95,7 +96,6 @@ export function setSessionCookie(req) {
   });
 }
 
-// Returns a Set-Cookie string that clears the session
 export function clearSessionCookie() {
   return cookieHeader(COOKIE_NAME, "", {
     path: "/",
@@ -107,24 +107,20 @@ export function clearSessionCookie() {
   });
 }
 
-// Boolean: is there a valid session?
-export function hasSession(req) {
+// Returns claims object when valid; null otherwise
+export function readSession(req) {
   const key = process.env.ACX_SESSION_KEY || "";
-  if (!key) return false;
+  if (!key) return null;
   const token = getCookie(req, COOKIE_NAME);
-  const claims = verifyToken(token, key);
-  if (!claims) return false;
-
-  // Optional UA bind for a little extra safety (soft check)
-  const ua = req.headers.get("user-agent") || "";
-  if (claims.ua && ua && claims.ua.slice(0, 16) !== ua.slice(0, 16)) {
-    // UA changed dramatically — still allow, or flip to false if you prefer stricter binding
-    return true;
-  }
-  return true;
+  return verifyToken(token, key);
 }
 
-// Gate: returns null if authed; returns a 401 Response if not
+// Boolean
+export function hasSession(req) {
+  return !!readSession(req);
+}
+
+// Returns null when authed; otherwise a 401 Response
 export function requireAuth(req) {
   if (hasSession(req)) return null;
   return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), {
