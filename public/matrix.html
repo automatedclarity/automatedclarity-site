@@ -13,8 +13,8 @@
     .h1 { font-size: 34px; font-weight: 800; letter-spacing: .2px; margin: 0 0 2px 0; }
     .muted { color: #96a3b7; }
     .logout { margin-top:4px; }
-    .logout a { color:#9fb0cc; text-decoration:none; font-weight:700; padding:8px 10px; border:1px solid #1c2640; border-radius:10px; background:#0f1629; display:inline-block }
-    .logout a:hover { color:#e6edf6; border-color:#2a375b; }
+    .btn { color:#9fb0cc; text-decoration:none; font-weight:700; padding:8px 10px; border:1px solid #1c2640; border-radius:10px; background:#0f1629; display:inline-block; cursor:pointer }
+    .btn:hover { color:#e6edf6; border-color:#2a375b; }
     input, button, select { font: inherit; }
     input[type="number"] {
       background: #0f1629; border: 1px solid #1c2640; color:#e6edf6; border-radius: 10px; padding: 10px 12px;
@@ -57,7 +57,7 @@
         <div class="muted">Live integrity & performance across locations</div>
       </div>
       <div class="logout">
-        <a href="/.netlify/functions/auth-logout">Log out</a>
+        <button id="logoutBtn" class="btn">Log out</button>
       </div>
     </div>
 
@@ -212,6 +212,18 @@ $("freq").addEventListener("change", () => {
 });
 
 document.addEventListener("DOMContentLoaded", load);
+
+// POST logout to clear cookie then bounce
+document.getElementById("logoutBtn").addEventListener("click", async () => {
+  try {
+    await fetch("/.netlify/functions/auth-logout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+    });
+  } catch(_) {}
+  location.href = "/matrix-login";
+});
 </script>
 </body>
 </html>
