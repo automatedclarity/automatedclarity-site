@@ -1,26 +1,31 @@
 // functions/gate-matrix.js
 import { readSession } from "./_lib/session.js";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
-// Serve /public files by path
-async function servePublic(path) {
-  const url = new URL(`../public${path}`, import.meta.url);
-  const res = await fetch(url);
-  if (!res.ok) return new Response("Not found", { status: 404 });
-  const html = await res.text();
-  return new Response(html, {
-    status: 200,
-    headers: {
-      "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "no-store"
-    }
-  });
-}
+const MATRIX_PATH = join(process.cwd(), "public", "matrix.html");
 
 export default async (req) => {
-  // Require valid ACX session cookie
-  if (!readSession(req)) {
-    return Response.redirect("/login.html", 302);
+  // Require a valid session cookie; otherwise bounce to login
+  const sess = readSession(req);
+  if (!sess) {
+    return new Response(null, {
+      status: 302,
+      headers: { Location: "/matrix-login" }, // static login page or your gated login route
+    });
   }
-  // If authenticated, return the dashboard HTML
-  return servePublic("/matrix.html");
+
+  // Serve the dashboard HTML directly from /public
+  try {
+    const html = await readFile(MATRIX_PATH, "utf8");
+    return new Response(html, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    });
+  } catch (e) {
+    return new Response("Matrix view missing", { status: 500 });
+  }
 };
