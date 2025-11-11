@@ -1,144 +1,115 @@
-<!-- /public/matrix.html -->
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ACX Matrix — Dashboard</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <style>
-    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 0; background: #0b1220; color: #e6edf6; }
-    .wrap { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
-    .topbar { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
-    .h1 { font-size: 34px; font-weight: 800; letter-spacing: .2px; margin: 0 0 2px 0; }
-    .muted { color: #96a3b7; }
-    .logout { margin-top:4px; }
-    .btn { color:#9fb0cc; text-decoration:none; font-weight:700; padding:8px 10px; border:1px solid #1c2640; border-radius:10px; background:#0f1629; display:inline-block; cursor:pointer }
-    .btn:hover { color:#e6edf6; border-color:#2a375b; }
-    input, button, select { font: inherit; }
-    input[type="number"] {
-      background: #0f1629; border: 1px solid #1c2640; color:#e6edf6; border-radius: 10px; padding: 10px 12px;
-    }
-    button {
-      background: #1b69ff; border: none; color: white; padding: 10px 14px; border-radius: 10px; cursor: pointer; font-weight: 700;
-    }
-    button:disabled { opacity: .6; cursor: default; }
-    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-    .cards { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; margin: 16px 0 8px; }
-    .card { background: #0f1629; border:1px solid #1c2640; border-radius: 14px; padding: 14px; }
-    .k { font-size: 12px; color: #9fb0cc; }
-    .v { font-size: 22px; font-weight: 800; margin-top: 4px; }
-    .grid { display: grid; grid-template-columns: 220px 120px 120px 120px 1fr 120px; gap: 8px; }
-    .locrow { background:#0f1629; border:1px solid #1c2640; border-radius: 12px; padding: 12px; align-items: center; }
-    .badge { padding: 4px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; display: inline-block; }
-    .b-opt { background: #0d2a13; color: #39d353; border: 1px solid #1d4e26; }
-    .b-deg { background: #2b1d0d; color: #ffb224; border: 1px solid #4e3a1d; }
-    .b-crit{ background: #2a0d0d; color: #ff5f56; border: 1px solid #4e1d1d; }
-    .b-unk { background: #1a1f2b; color: #9fb0cc; border: 1px solid #273149; }
-    table { width: 100%; border-collapse: collapse; margin-top: 18px; }
-    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #1c2640; }
-    th { color:#9fb0cc; font-weight: 600; }
-    .right { text-align: right; }
-    .spark { width: 100%; height: 42px; }
-    .controls { gap: 10px; margin-top: 10px; }
-    .pill { display: inline-flex; align-items: center; gap: 8px; background:#0f1629;border:1px solid #1c2640;border-radius:999px;padding:8px 12px;}
-    .small { font-size: 12px; color:#9fb0cc; }
-    @media (max-width: 900px) {
-      .cards { grid-template-columns: repeat(2, minmax(0,1fr)); }
-      .grid { grid-template-columns: 1fr; }
-    }
-  </style>
+<meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ACX Matrix — Dashboard</title>
+<style>
+  body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 0; background: #0b1220; color: #e6edf6; }
+  .wrap { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
+  .topbar { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+  .h1 { font-size: 34px; font-weight: 800; letter-spacing: .2px; margin: 0 0 2px 0; }
+  .muted { color: #96a3b7; }
+  .logout { margin-top:4px; }
+  .logout a { color:#9fb0cc; text-decoration:none; font-weight:700; padding:8px 10px; border:1px solid #1c2640; border-radius:10px; background:#0f1629; display:inline-block }
+  .logout a:hover { color:#e6edf6; border-color:#2a375b; }
+  input, button, select { font: inherit; }
+  input[type="number"] { background: #0f1629; border: 1px solid #1c2640; color:#e6edf6; border-radius: 10px; padding: 10px 12px; }
+  button { background: #1b69ff; border: none; color: white; padding: 10px 14px; border-radius: 10px; cursor: pointer; font-weight: 700; }
+  button:disabled { opacity: .6; cursor: default; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .cards { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; margin: 16px 0 8px; }
+  .card { background: #0f1629; border:1px solid #1c2640; border-radius: 14px; padding: 14px; }
+  .k { font-size: 12px; color: #9fb0cc; }
+  .v { font-size: 22px; font-weight: 800; margin-top: 4px; }
+  .grid { display: grid; grid-template-columns: 220px 120px 120px 120px 1fr 120px; gap: 8px; }
+  .locrow { background:#0f1629; border:1px solid #1c2640; border-radius: 12px; padding: 12px; align-items: center; }
+  .badge { padding: 4px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; display: inline-block; }
+  .b-opt { background: #0d2a13; color: #39d353; border: 1px solid #1d4e26; }
+  .b-deg { background: #2b1d0d; color: #ffb224; border: 1px solid #4e3a1d; }
+  .b-crit{ background: #2a0d0d; color: #ff5f56; border: 1px solid #4e1d1d; }
+  .b-unk { background: #1a1f2b; color: #9fb0cc; border: 1px solid #273149; }
+  table { width: 100%; border-collapse: collapse; margin-top: 18px; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #1c2640; }
+  th { color:#9fb0cc; font-weight: 600; }
+  .right { text-align: right; }
+  .spark { width: 100%; height: 42px; }
+  .controls { gap: 10px; margin-top: 10px; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; background:#0f1629;border:1px solid #1c2640;border-radius:999px;padding:8px 12px;}
+  .small { font-size: 12px; color:#9fb0cc; }
+  @media (max-width: 900px) { .cards { grid-template-columns: repeat(2, minmax(0,1fr)); } .grid { grid-template-columns: 1fr; } }
+</style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="topbar">
-      <div>
-        <div class="h1">ACX Matrix — Dashboard</div>
-        <div class="muted">Live integrity & performance across locations</div>
-      </div>
-      <div class="logout">
-        <button id="logoutBtn" class="btn">Log out</button>
-      </div>
+<div class="wrap">
+  <div class="topbar">
+    <div>
+      <div class="h1">ACX Matrix — Dashboard</div>
+      <div class="muted">Live integrity & performance across locations</div>
     </div>
-
-    <div class="row controls">
-      <span class="pill">
-        <span class="small">Auto-refresh</span>
-        <select id="freq">
-          <option value="0">Off</option>
-          <option value="5">5s</option>
-          <option value="10" selected>10s</option>
-          <option value="30">30s</option>
-          <option value="60">60s</option>
-        </select>
-      </span>
-      <span class="pill">
-        <span class="small">Recent rows</span>
-        <input id="lim" type="number" min="10" max="1000" value="100" style="width:90px">
-      </span>
-      <button id="load">Load</button>
-      <div class="muted small" id="meta"></div>
-    </div>
-
-    <div class="cards">
-      <div class="card"><div class="k">Locations (by severity)</div><div class="v" id="c_locs">–</div></div>
-      <div class="card"><div class="k">Critical</div><div class="v" id="c_crit">–</div></div>
-      <div class="card"><div class="k">Degraded</div><div class="v" id="c_deg">–</div></div>
-      <div class="card"><div class="k">Optimal</div><div class="v" id="c_opt">–</div></div>
-    </div>
-
-    <h3 style="margin:14px 0 8px">Locations</h3>
-    <div id="locs"></div>
-
-    <h3 style="margin:14px 0 8px">Recent Ingests</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>Timestamp</th><th>Account</th><th>Location</th>
-          <th class="right">Uptime</th><th class="right">Conv</th><th class="right">Resp (ms)</th>
-          <th class="right">Quotes</th><th>Integrity</th><th>Run ID</th>
-        </tr>
-      </thead>
-      <tbody id="rows"></tbody>
-    </table>
+    <div class="logout"><a href="/.netlify/functions/auth-logout">Log out</a></div>
   </div>
+
+  <div class="row controls">
+    <span class="pill">
+      <span class="small">Auto-refresh</span>
+      <select id="freq">
+        <option value="0">Off</option><option value="5">5s</option><option value="10" selected>10s</option>
+        <option value="30">30s</option><option value="60">60s</option>
+      </select>
+    </span>
+    <span class="pill">
+      <span class="small">Recent rows</span>
+      <input id="lim" type="number" min="10" max="1000" value="100" style="width:90px">
+    </span>
+    <button id="load">Load</button>
+    <div class="muted small" id="meta"></div>
+  </div>
+
+  <div class="cards">
+    <div class="card"><div class="k">Locations (by severity)</div><div class="v" id="c_locs">–</div></div>
+    <div class="card"><div class="k">Critical</div><div class="v" id="c_crit">–</div></div>
+    <div class="card"><div class="k">Degraded</div><div class="v" id="c_deg">–</div></div>
+    <div class="card"><div class="k">Optimal</div><div class="v" id="c_opt">–</div></div>
+  </div>
+
+  <h3 style="margin:14px 0 8px">Locations</h3>
+  <div id="locs"></div>
+
+  <h3 style="margin:14px 0 8px">Recent Ingests</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Timestamp</th><th>Account</th><th>Location</th>
+        <th class="right">Uptime</th><th class="right">Conv</th><th class="right">Resp (ms)</th>
+        <th class="right">Quotes</th><th>Integrity</th><th>Run ID</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
 
 <script>
 const $ = (id) => document.getElementById(id);
 const sevClass = (s) => s==='critical'?'b-crit':(s==='degraded'?'b-deg':(s==='optimal'?'b-opt':'b-unk'));
-
 function sparkline(points, min, max, color="#7aa2ff") {
   if (!points.length) return '';
   const w=220, h=42, pad=4, span=w-(pad*2);
-  const ys = points.map(v => {
-    const cl = (v - min) / Math.max(1e-9, (max - min));
-    return h - pad - (cl * (h-pad*2));
-  });
+  const ys = points.map(v => { const cl = (v - min) / Math.max(1e-9,(max-min)); return h - pad - (cl * (h-pad*2)); });
   const xs = points.map((_,i)=> pad + (i/(points.length-1))*span);
-  let d = `M ${xs[0]} ${ys[0]}`;
-  for (let i=1;i<xs.length;i++) d += ` L ${xs[i]} ${ys[i]}`;
-  return `<svg class="spark" viewBox="0 0 ${w} ${h}">
-    <path d="${d}" fill="none" stroke="${color}" stroke-width="2"/>
-  </svg>`;
+  let d = `M ${xs[0]} ${ys[0]}`; for (let i=1;i<xs.length;i++) d += ` L ${xs[i]} ${ys[i]}`;
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}"><path d="${d}" fill="none" stroke="${color}" stroke-width="2"/></svg>`;
 }
 
 async function load() {
   try {
     $("load").disabled = true;
     const limit = +$("lim").value || 100;
-
-    const res = await fetch("/.netlify/functions/acx-matrix-summary?limit="+limit, {
-      cache: "no-store",
-      credentials: "include"
-    });
-
+    const res = await fetch("/.netlify/functions/acx-matrix-summary?limit="+limit, { cache:"no-store", credentials:"include" });
     if (res.status === 401) { location.href = "/matrix-login"; return; }
-
     const data = await res.json();
     $("load").disabled = false;
     if (!data.ok) { $("meta").textContent = "Load failed"; return; }
 
-    // Counters
     const locs = data.locations || [];
     const crit = locs.filter(l=>l.integrity==='critical').length;
     const deg  = locs.filter(l=>l.integrity==='degraded').length;
@@ -149,37 +120,23 @@ async function load() {
     $("c_opt").textContent  = String(opt);
     $("meta").textContent   = `${(data.recent||[]).length} recent rows`;
 
-    // Locations grid
-    const holder = $("locs");
-    holder.innerHTML = "";
+    const holder = $("locs"); holder.innerHTML = "";
     locs.forEach(l => {
       const series = (data.series && data.series[l.location]) || [];
       const upts  = series.map(s=>Number(s.uptime||0));
-
       const block = document.createElement("div");
       block.className = "grid locrow";
       block.innerHTML = `
-        <div>
-          <div style="font-weight:800">${l.account}</div>
-          <div class="muted small">${l.location}</div>
-        </div>
+        <div><div style="font-weight:800">${l.account}</div><div class="muted small">${l.location}</div></div>
         <div><span class="k">Uptime</span><div class="v">${Number(l.uptime||0).toFixed(1)}</div></div>
         <div><span class="k">Conv</span><div class="v">${Number(l.conversion||0).toFixed(1)}</div></div>
         <div><span class="k">Resp</span><div class="v">${Number(l.response_ms||0).toFixed(0)}</div></div>
-        <div>
-          <div class="k">Trends</div>
-          <div>${sparkline(upts, 0, 100, "#39d353")}</div>
-        </div>
-        <div style="text-align:right">
-          <span class="badge ${sevClass(l.integrity)}">${l.integrity}</span>
-        </div>
-      `;
+        <div><div class="k">Trends</div><div>${sparkline(upts, 0, 100, "#39d353")}</div></div>
+        <div style="text-align:right"><span class="badge ${sevClass(l.integrity)}">${l.integrity}</span></div>`;
       holder.appendChild(block);
     });
 
-    // Recent table
-    const tbody = $("rows");
-    tbody.innerHTML = "";
+    const tbody = $("rows"); tbody.innerHTML = "";
     (data.recent||[]).forEach(r => {
       const tr = document.createElement("tr");
       const dt = r.ts ? new Date(r.ts) : null;
@@ -192,38 +149,18 @@ async function load() {
         <td class="right">${r.response_ms!==""?Number(r.response_ms).toFixed(0):""}</td>
         <td class="right">${r.quotes_recovered!==""?Number(r.quotes_recovered).toFixed(0):""}</td>
         <td><span class="badge ${sevClass((r.integrity||'').toLowerCase())}">${(r.integrity||'').toLowerCase()}</span></td>
-        <td>${r.run_id||''}</td>
-      `;
+        <td>${r.run_id||''}</td>`;
       tbody.appendChild(tr);
     });
-  } catch (e) {
+  } catch {
     $("load").disabled = false;
     $("meta").textContent = "Load failed";
   }
 }
-
 $("load").addEventListener("click", load);
-
 let timer = null;
-$("freq").addEventListener("change", () => {
-  if (timer) clearInterval(timer);
-  const s = +$("freq").value;
-  if (s > 0) timer = setInterval(load, s * 1000);
-});
-
+$("freq").addEventListener("change", () => { if (timer) clearInterval(timer); const s=+$("freq").value; if (s>0) timer=setInterval(load, s*1000); });
 document.addEventListener("DOMContentLoaded", load);
-
-// POST logout to clear cookie then bounce
-document.getElementById("logoutBtn").addEventListener("click", async () => {
-  try {
-    await fetch("/.netlify/functions/auth-logout", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-    });
-  } catch(_) {}
-  location.href = "/matrix-login";
-});
 </script>
 </body>
 </html>
