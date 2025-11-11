@@ -1,41 +1,40 @@
+// functions/acx-matrix-recent.js
+import { readSession } from "./_lib/session.js";
 import { getStore } from "@netlify/blobs";
 
-const STORE = process.env.ACX_BLOBS_STORE || "acx-matrix";
-const PFX = "events/"; // must match writer
+const STORE = process.env.ACX_BLOBS_STORE || "acx_matrix";
+const KEY_PREFIX = "matrix:";
 
 export default async (req) => {
-  // auth (same as your other functions)
-  const secret = req.headers.get("x-acx-secret") || "";
-  if (!secret || secret !== (process.env.ACX_WEBHOOK_SECRET || "")) {
-    return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), {
-      status: 401, headers: { "content-type": "application/json" }
-    });
+  if (req.method !== "GET") return new Response("Method Not Allowed", { status: 405 });
+
+  // ✅ Cookie/session auth
+  if (!readSession(req)) return new Response(JSON.stringify({ ok:false, error:"Unauthorized" }), {
+    status: 401, headers: { "Content-Type": "application/json" }
+  });
+
+  const url = new URL(req.url, "http://x");
+  const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit") || 50), 500));
+
+  const store = getStore(STORE);
+  let cursor; const all = [];
+  while (all.length < limit) {
+    const page = await store.list({ prefix: KEY_PREFIX, cursor, limit });
+    (page.blobs || []).forEach(b => all.push(b));
+    cursor = page.cursor;
+    if (!cursor) break;
   }
+  all.sort((a,b)=> (b.uploadedAt > a.uploadedAt ? 1 : -1));
 
-  // ?limit=
-  let limit = 10;
-  try {
-    const n = Number(new URL(req.url).searchParams.get("limit") || "");
-    if (!Number.isNaN(n) && n > 0 && n <= 100) limit = n;
-  } catch {}
-
-  const store = getStore({ name: STORE });
-
-  // list keys under the SAME prefix
-  const { blobs } = await store.list({ prefix: PFX, limit: 500 });
-  console.info("MATRIX_READ " + JSON.stringify({ store: STORE, found: blobs.length }));
-
-  // newest first by key (timestamp prefix)
-  blobs.sort((a, b) => (a.key < b.key ? 1 : -1));
-  const pick = blobs.slice(0, limit);
-
+  const top = all.slice(0, limit);
   const events = [];
-  for (const it of pick) {
-    const res = await store.get(it.key, { type: "json" });
-    if (res) events.push(res);
+  for (const b of top) {
+    const body = await store.get(b.key);
+    if (!body) continue;
+    try { events.push(await body.json()); } catch {}
   }
 
-  return new Response(JSON.stringify({ ok: true, count: events.length, events }), {
-    headers: { "content-type": "application/json" }
+  return new Response(JSON.stringify({ ok:true, count: events.length, events }), {
+    headers: { "Content-Type": "application/json" }
   });
 };
