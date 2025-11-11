@@ -1,102 +1,65 @@
-<!-- /public/matrix-login.html -->
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ACX Matrix — Sign In</title>
-  <style>
-    body{margin:0;background:#0b1220;color:#e6edf6;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
-    .wrap{max-width:520px;margin:64px auto;padding:0 16px}
-    h1{font-size:34px;margin:0 0 6px;font-weight:800}
-    .muted{color:#96a3b7}
-    .card{margin-top:16px;background:#0f1629;border:1px solid #1c2640;border-radius:14px;padding:18px}
-    label{display:block;font-weight:600;margin-bottom:8px}
-    input{width:100%;background:#0b1220;border:1px solid #2a3556;color:#e6edf6;border-radius:10px;padding:12px;font-size:16px}
-    .row{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
-    button{background:#1b69ff;border:none;color:white;padding:10px 14px;border-radius:10px;cursor:pointer;font-weight:700}
-    button.secondary{background:#2a3556}
-    button:disabled{opacity:.6;cursor:default}
-    .meta{margin-top:10px;color:#9fb0cc;font-size:13px;min-height:18px}
-  </style>
+<meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ACX Matrix — Sign In</title>
+<style>
+  body{margin:0;background:#0b1220;color:#e6edf6;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+  .wrap{max-width:520px;margin:64px auto;padding:0 16px}
+  h1{font-size:34px;margin:0 0 6px;font-weight:800}
+  .muted{color:#96a3b7}
+  .card{margin-top:16px;background:#0f1629;border:1px solid #1c2640;border-radius:14px;padding:18px}
+  label{display:block;font-weight:600;margin-bottom:8px}
+  input{width:100%;background:#0b1220;border:1px solid #2a3556;color:#e6edf6;border-radius:10px;padding:12px;font-size:16px}
+  .row{display:flex;gap:8px;margin-top:12px}
+  button{background:#1b69ff;border:none;color:white;padding:10px 14px;border-radius:10px;cursor:pointer;font-weight:700}
+  .btn{background:#2a3556;text-decoration:none;display:inline-block;padding:10px 14px;border-radius:10px;color:#e6edf6}
+  .meta{margin-top:10px;color:#9fb0cc;font-size:13px}
+</style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>ACX Matrix — Sign In</h1>
-    <div class="muted">Use your operator password to access the dashboard.</div>
-
-    <div class="card">
-      <label for="pw">Password</label>
-      <input id="pw" type="password" placeholder="••••••••" autocomplete="current-password" autofocus />
-      <div class="row">
-        <button id="loginBtn">Sign in</button>
-        <button id="logoutBtn" class="secondary" type="button">Log out</button>
-        <button id="goBtn" class="secondary" type="button" style="display:none">Continue to Dashboard</button>
-      </div>
-      <div id="msg" class="meta"></div>
-      <div id="stateMsg" class="meta"></div>
+<div class="wrap">
+  <h1>ACX Matrix — Sign In</h1>
+  <div class="muted">Use your operator password to access the dashboard.</div>
+  <div class="card">
+    <label for="pw">Password</label>
+    <input id="pw" type="password" placeholder="••••••••" autocomplete="current-password" />
+    <div class="row">
+      <button id="loginBtn">Sign in</button>
+      <a class="btn" href="/.netlify/functions/auth-logout">Log out</a>
+      <button id="goBtn" style="display:none">Continue to Dashboard</button>
     </div>
+    <div id="msg" class="meta"></div>
+    <div id="stateMsg" class="meta"></div>
   </div>
-
+</div>
 <script>
-const $ = (id) => document.getElementById(id);
-
 async function checkSession(){
-  const state = $("stateMsg");
-  const goBtn = $("goBtn");
+  const state = document.getElementById("stateMsg");
+  const goBtn = document.getElementById("goBtn");
   try{
-    const r = await fetch("/.netlify/functions/auth-check", { credentials:"include", cache:"no-store" });
+    const r = await fetch("/.netlify/functions/auth-check",{credentials:"include",cache:"no-store"});
     const j = await r.json().catch(()=>({ok:false}));
-    if(j.ok){ state.textContent = "Already signed in."; goBtn.style.display="inline-block"; }
-    else { state.textContent = "Not signed in."; goBtn.style.display="none"; }
+    if(j.ok){ state.textContent="Already signed in."; goBtn.style.display="inline-block"; }
+    else { state.textContent="Not signed in."; goBtn.style.display="none"; }
   }catch{ state.textContent=""; goBtn.style.display="none"; }
 }
-
 async function doLogin(){
-  const pw = $("pw").value.trim();
-  const msg = $("msg");
-  const btn = $("loginBtn");
-  msg.textContent = "";
-  if(!pw){ msg.textContent = "Please enter a password."; return; }
-  btn.disabled = true;
-  try{
-    const res = await fetch("/.netlify/functions/auth-login", {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      credentials:"include",
-      body: JSON.stringify({ password: pw })
-    });
-    const data = await res.json().catch(()=>({ok:false}));
-    if(data.ok){ msg.textContent = "Signed in. Redirecting…"; window.location.href="/matrix"; }
-    else { msg.textContent = data.error || "Invalid password."; }
-  } finally {
-    btn.disabled = false;
-  }
+  const pw = document.getElementById("pw").value.trim();
+  const msg = document.getElementById("msg");
+  msg.textContent="";
+  if(!pw){ msg.textContent="Please enter a password."; return; }
+  const res = await fetch("/.netlify/functions/auth-login",{
+    method:"POST", headers:{ "Content-Type":"application/json" }, credentials:"include",
+    body: JSON.stringify({ password: pw })
+  });
+  const data = await res.json().catch(()=>({ok:false}));
+  if(data.ok){ msg.textContent="Signed in. Redirecting…"; window.location.href="/matrix"; }
+  else { msg.textContent = data.error || "Invalid password."; }
 }
-
-async function doLogout(){
-  const msg = $("msg");
-  msg.textContent = "";
-  try{
-    await fetch("/.netlify/functions/auth-logout", {
-      method:"POST",
-      credentials:"include",
-      headers:{ "Content-Type":"application/json" }
-    });
-    msg.textContent = "Signed out.";
-    $("goBtn").style.display = "none";
-  } catch {
-    msg.textContent = "Logout failed.";
-  } finally {
-    await checkSession();
-  }
-}
-
-$("loginBtn").addEventListener("click", doLogin);
-$("logoutBtn").addEventListener("click", doLogout);
-$("goBtn").addEventListener("click", ()=>{ window.location.href="/matrix"; });
-$("pw").addEventListener("keydown", e => { if(e.key==="Enter") doLogin(); });
-
+document.getElementById("loginBtn").addEventListener("click", doLogin);
+document.getElementById("goBtn").addEventListener("click", ()=>{ window.location.href="/matrix"; });
+document.getElementById("pw").addEventListener("keydown", e => { if(e.key==="Enter") doLogin(); });
 checkSession();
 </script>
 </body>
