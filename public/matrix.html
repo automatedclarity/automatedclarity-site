@@ -9,8 +9,12 @@
   <style>
     body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 0; background: #0b1220; color: #e6edf6; }
     .wrap { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
-    .h1 { font-size: 34px; font-weight: 800; letter-spacing: .2px; margin-bottom: 2px; }
+    .topbar { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+    .h1 { font-size: 34px; font-weight: 800; letter-spacing: .2px; margin: 0 0 2px 0; }
     .muted { color: #96a3b7; }
+    .logout { margin-top:4px; }
+    .logout a { color:#9fb0cc; text-decoration:none; font-weight:700; padding:8px 10px; border:1px solid #1c2640; border-radius:10px; background:#0f1629; display:inline-block }
+    .logout a:hover { color:#e6edf6; border-color:#2a375b; }
     input, button, select { font: inherit; }
     input[type="number"] {
       background: #0f1629; border: 1px solid #1c2640; color:#e6edf6; border-radius: 10px; padding: 10px 12px;
@@ -47,8 +51,15 @@
 </head>
 <body>
   <div class="wrap">
-    <div class="h1">ACX Matrix — Dashboard</div>
-    <div class="muted">Live integrity & performance across locations</div>
+    <div class="topbar">
+      <div>
+        <div class="h1">ACX Matrix — Dashboard</div>
+        <div class="muted">Live integrity & performance across locations</div>
+      </div>
+      <div class="logout">
+        <a href="/.netlify/functions/auth-logout">Log out</a>
+      </div>
+    </div>
 
     <div class="row controls">
       <span class="pill">
@@ -112,99 +123,95 @@ function sparkline(points, min, max, color="#7aa2ff") {
 }
 
 async function load() {
-  $("load").disabled = true;
+  try {
+    $("load").disabled = true;
+    const limit = +$("lim").value || 100;
 
-  const limit = +$("lim").value || 100;
-  // Use cookie session (set by /auth-login). No secret header.
-  const res = await fetch("/.netlify/functions/acx-matrix-summary?limit="+limit, {
-    cache: "no-store",
-    credentials: "include"
-  });
+    const res = await fetch("/.netlify/functions/acx-matrix-summary?limit="+limit, {
+      cache: "no-store",
+      credentials: "include"
+    });
 
-  if (res.status === 401) { location.href = "/matrix-login"; return; }
+    if (res.status === 401) { location.href = "/matrix-login"; return; }
 
-  let data = { ok:false };
-  try { data = await res.json(); } catch {}
-  $("load").disabled = false;
+    const data = await res.json();
+    $("load").disabled = false;
+    if (!data.ok) { $("meta").textContent = "Load failed"; return; }
 
-  if (!data.ok) { alert("Fetch failed"); return; }
+    // Counters
+    const locs = data.locations || [];
+    const crit = locs.filter(l=>l.integrity==='critical').length;
+    const deg  = locs.filter(l=>l.integrity==='degraded').length;
+    const opt  = locs.filter(l=>l.integrity==='optimal').length;
+    $("c_locs").textContent = String(locs.length);
+    $("c_crit").textContent = String(crit);
+    $("c_deg").textContent  = String(deg);
+    $("c_opt").textContent  = String(opt);
+    $("meta").textContent   = `${(data.recent||[]).length} recent rows`;
 
-  // ----- Counters -----
-  const locs = data.locations || [];
-  const crit = locs.filter(l=>l.integrity==='critical').length;
-  const deg  = locs.filter(l=>l.integrity==='degraded').length;
-  const opt  = locs.filter(l=>l.integrity==='optimal').length;
-  $("c_locs").textContent = String(locs.length);
-  $("c_crit").textContent = String(crit);
-  $("c_deg").textContent  = String(deg);
-  $("c_opt").textContent  = String(opt);
-  $("meta").textContent   = `${(data.recent||[]).length} recent rows`;
+    // Locations grid
+    const holder = $("locs");
+    holder.innerHTML = "";
+    locs.forEach(l => {
+      const series = (data.series && data.series[l.location]) || [];
+      const upts  = series.map(s=>Number(s.uptime||0));
 
-  // ----- Locations grid -----
-  const holder = $("locs");
-  holder.innerHTML = "";
-  locs.forEach(l => {
-    const series = (data.series && data.series[l.location]) || [];
-    const upts  = series.map(s=>Number(s.uptime||0));
-    const convs = series.map(s=>Number(s.conv||0));
-    const resps = series.map(s=>Number(s.resp||0));
+      const block = document.createElement("div");
+      block.className = "grid locrow";
+      block.innerHTML = `
+        <div>
+          <div style="font-weight:800">${l.account}</div>
+          <div class="muted small">${l.location}</div>
+        </div>
+        <div><span class="k">Uptime</span><div class="v">${Number(l.uptime||0).toFixed(1)}</div></div>
+        <div><span class="k">Conv</span><div class="v">${Number(l.conversion||0).toFixed(1)}</div></div>
+        <div><span class="k">Resp</span><div class="v">${Number(l.response_ms||0).toFixed(0)}</div></div>
+        <div>
+          <div class="k">Trends</div>
+          <div>${sparkline(upts, 0, 100, "#39d353")}</div>
+        </div>
+        <div style="text-align:right">
+          <span class="badge ${sevClass(l.integrity)}">${l.integrity}</span>
+        </div>
+      `;
+      holder.appendChild(block);
+    });
 
-    const block = document.createElement("div");
-    block.className = "grid locrow";
-    block.innerHTML = `
-      <div>
-        <div style="font-weight:800">${l.account}</div>
-        <div class="muted small">${l.location}</div>
-      </div>
-      <div><span class="k">Uptime</span><div class="v">${Number(l.uptime||0).toFixed(1)}</div></div>
-      <div><span class="k">Conv</span><div class="v">${Number(l.conversion||0).toFixed(1)}</div></div>
-      <div><span class="k">Resp</span><div class="v">${Number(l.response_ms||0).toFixed(0)}</div></div>
-      <div>
-        <div class="k">Trends</div>
-        <div>${sparkline(upts, 0, 100, "#39d353")}</div>
-      </div>
-      <div style="text-align:right">
-        <span class="badge ${sevClass(l.integrity)}">${l.integrity}</span>
-      </div>
-    `;
-    holder.appendChild(block);
-  });
-
-  // ----- Recent table -----
-  const tbody = $("rows");
-  tbody.innerHTML = "";
-  (data.recent||[]).forEach(r => {
-    const tr = document.createElement("tr");
-    const dt = r.ts ? new Date(r.ts) : null;
-    tr.innerHTML = `
-      <td>${dt?dt.toLocaleString():''}</td>
-      <td>${r.account||''}</td>
-      <td>${r.location||''}</td>
-      <td class="right">${r.uptime!==""?Number(r.uptime).toFixed(1):""}</td>
-      <td class="right">${r.conversion!==""?Number(r.conversion).toFixed(1):""}</td>
-      <td class="right">${r.response_ms!==""?Number(r.response_ms).toFixed(0):""}</td>
-      <td class="right">${r.quotes_recovered!==""?Number(r.quotes_recovered).toFixed(0):""}</td>
-      <td><span class="badge ${sevClass((r.integrity||'').toLowerCase())}">${(r.integrity||'').toLowerCase()}</span></td>
-      <td>${r.run_id||''}</td>
-    `;
-    tbody.appendChild(tr);
-  });
+    // Recent table
+    const tbody = $("rows");
+    tbody.innerHTML = "";
+    (data.recent||[]).forEach(r => {
+      const tr = document.createElement("tr");
+      const dt = r.ts ? new Date(r.ts) : null;
+      tr.innerHTML = `
+        <td>${dt?dt.toLocaleString():''}</td>
+        <td>${r.account||''}</td>
+        <td>${r.location||''}</td>
+        <td class="right">${r.uptime!==""?Number(r.uptime).toFixed(1):""}</td>
+        <td class="right">${r.conversion!==""?Number(r.conversion).toFixed(1):""}</td>
+        <td class="right">${r.response_ms!==""?Number(r.response_ms).toFixed(0):""}</td>
+        <td class="right">${r.quotes_recovered!==""?Number(r.quotes_recovered).toFixed(0):""}</td>
+        <td><span class="badge ${sevClass((r.integrity||'').toLowerCase())}">${(r.integrity||'').toLowerCase()}</span></td>
+        <td>${r.run_id||''}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    $("load").disabled = false;
+    $("meta").textContent = "Load failed";
+  }
 }
 
 $("load").addEventListener("click", load);
 
-// Auto refresh loop
 let timer = null;
 $("freq").addEventListener("change", () => {
   if (timer) clearInterval(timer);
   const s = +$("freq").value;
-  if (s > 0) timer = setInterval(() => { load(); }, s * 1000);
+  if (s > 0) timer = setInterval(load, s * 1000);
 });
 
-// If already logged in, auto-load on first paint
-document.addEventListener("DOMContentLoaded", () => {
-  load();
-});
+document.addEventListener("DOMContentLoaded", load);
 </script>
 </body>
 </html>
