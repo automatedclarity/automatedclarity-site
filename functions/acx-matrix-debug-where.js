@@ -1,47 +1,31 @@
-// functions/acx-matrix-debug-where.js
-import { readSession } from "./_lib/session.js";
+// Lists what the Blobs store actually contains so we can align writer vs reader.
+// Call:  /.netlify/functions/acx-matrix-debug-where
 import { getStore } from "@netlify/blobs";
 
-// Quick inspector to see where events are stored
-export default async (req) => {
-  // Require logged-in session (same as dashboard)
-  if (!readSession(req)) {
-    return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" }
-    });
-  }
+const CANDIDATES = [
+  { store: process.env.ACX_BLOBS_STORE || "acx_matrix_events", prefix: "event:" },
+  { store: "acx_matrix_events", prefix: "event:" },
+  { store: "acx_matrix",        prefix: "matrix:" },
+  { store: "acx_matrix",        prefix: "" },
+  { store: "acx_matrix_events", prefix: "" },
+];
 
-  const storesToCheck = [
-    { name: "acx_matrix", prefix: "matrix:" },
-    { name: "acx_matrix", prefix: "" },
-    { name: "acx_matrix_events", prefix: "" },
-  ];
-
+export default async () => {
   const results = {};
-  for (const s of storesToCheck) {
+  for (const c of CANDIDATES) {
     try {
-      const store = getStore(s.name);
-      const opts = { limit: 50 };
-      if (s.prefix) opts.prefix = s.prefix;
-      const page = await store.list(opts);
-      results[`${s.name} (prefix '${s.prefix}')`] = {
+      const store = getStore(c.store);
+      const page  = await store.list({ prefix: c.prefix, limit: 10 });
+      results[`${c.store} (prefix '${c.prefix}')`] = {
         ok: true,
-        count: (page.blobs || []).length,
-        sample: (page.blobs || []).slice(0, 5).map(b => ({
-          key: b.key,
-          uploadedAt: b.uploadedAt
-        }))
+        count: page.blobs?.length || 0,
+        sample: (page.blobs || []).map(b => ({ key: b.key, uploadedAt: b.uploadedAt }))
       };
     } catch (e) {
-      results[`${s.name} (prefix '${s.prefix}')`] = {
-        ok: false,
-        error: String(e && e.message || e)
-      };
+      results[`${c.store} (prefix '${c.prefix}')`] = { ok: false, error: String(e) };
     }
   }
-
   return new Response(JSON.stringify({ ok: true, results }, null, 2), {
-    headers: { "Content-Type": "application/json" }
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
   });
 };
