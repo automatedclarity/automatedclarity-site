@@ -1,22 +1,31 @@
-import { checkAuth, unauthorized, methodNotAllowed } from "./_lib/auth.js";
+// Cookie-auth Summary for ACX Matrix Dashboard
+import { requireAuth } from "./_lib/session.js";
 import { getStore } from "@netlify/blobs";
 
 const STORE = process.env.ACX_BLOBS_STORE || "acx-matrix";
-const PFX   = "event:";           // SAME PREFIX
+const PFX   = "event:";           // MUST match writer
 const DEFAULT_LIMIT = 100;
 const SERIES_POINTS = 50;
 
 export default async (req) => {
-  if (req.method !== "GET") return methodNotAllowed();
-  if (!checkAuth(req)) return unauthorized();
+  // Browser hits this with the acx_session cookie
+  const guard = requireAuth(req);
+  if (guard) return guard; // 401 JSON when not signed in
+
+  if (req.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
 
   const url = new URL(req.url);
   const limit = Math.min(Number(url.searchParams.get("limit") || DEFAULT_LIMIT), DEFAULT_LIMIT);
 
-  const store = getStore(STORE); // positional
+  const store = getStore({ name: STORE });
+
+  // List newest-first
   const page = await store.list({ prefix: PFX, limit: 2000 });
   const blobs = (page.blobs || []).sort((a,b) => (b.uploadedAt > a.uploadedAt ? 1 : -1));
 
+  // Recent rows (limited)
   const rows = [];
   for (const b of blobs.slice(0, limit)) {
     const r = await store.get(b.key);
@@ -24,9 +33,10 @@ export default async (req) => {
     try { rows.push(await r.json()); } catch {}
   }
 
+  // Build latest-per-location + time series
   const latest = new Map();
   const series = new Map();
-  const seen = new Map();
+  const seen   = new Map();
 
   for (const b of blobs) {
     const r = await store.get(b.key);
@@ -39,7 +49,8 @@ export default async (req) => {
     if (!latest.has(loc)) {
       latest.set(loc, {
         location: loc, account: acc, last_seen: item.ts || b.uploadedAt,
-        uptime: Number(item.uptime || 0), conversion: Number(item.conversion || 0),
+        uptime: Number(item.uptime || 0),
+        conversion: Number(item.conversion || 0),
         response_ms: Number(item.response_ms || 0),
         quotes_recovered: Number(item.quotes_recovered || 0),
         integrity: (item.integrity || "unknown").toLowerCase()
@@ -47,7 +58,7 @@ export default async (req) => {
     }
 
     if (!series.has(loc)) series.set(loc, []);
-    if (!seen.has(loc)) seen.set(loc, 0);
+    if (!seen.has(loc))   seen.set(loc, 0);
 
     const c = seen.get(loc);
     if (c < SERIES_POINTS) {
@@ -61,7 +72,6 @@ export default async (req) => {
       });
       seen.set(loc, c + 1);
     }
-    if ([...seen.values()].every(v => v >= SERIES_POINTS) && rows.length >= limit) break;
   }
 
   for (const arr of series.values()) arr.sort((a,b) => (a.ts > b.ts ? 1 : -1));
@@ -73,7 +83,10 @@ export default async (req) => {
     return (b.uptime || 0) - (a.uptime || 0);
   });
 
-  return new Response(JSON.stringify({ ok: true, recent: rows, locations, series: Object.fromEntries(series) }), {
-    headers: { "Content-Type": "application/json" }
-  });
+  return new Response(JSON.stringify({
+    ok: true,
+    recent: rows,
+    locations,
+    series: Object.fromEntries(series),
+  }), { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
 };
