@@ -1,3 +1,4 @@
+// functions/auth-login.js
 import { createSession, setCookie } from "./_lib/session.js";
 
 export default async (req) => {
