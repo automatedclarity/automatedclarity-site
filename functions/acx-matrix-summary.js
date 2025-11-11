@@ -1,90 +1,60 @@
-// /functions/acx-matrix-summary.js
-import { checkAuth, unauthorized, methodNotAllowed } from "./_lib/auth.js";
+// functions/acx-matrix-summary.js
+import { readSession } from "./_lib/session.js";
 import { getStore } from "@netlify/blobs";
 
-/**
- * ACX Matrix — Summary endpoint
- * Returns:
- *  {
- *    ok: true,
- *    recent: [ {ts,account,location,uptime,conversion,response_ms,quotes_recovered,integrity,run_id} ],
- *    locations: [ {location,account,last_seen,uptime,conversion,response_ms,quotes_recovered,integrity} ],
- *    series: { [location]: [{ts,uptime,conv,resp,quotes,integrity}] }
- *  }
- */
-
-// === Tunables (must match your writer) ===========================
-const STORE = "acx_matrix_events";   // <— matches /acx-matrix-webhook writer
-const KEY_PREFIX = "";               // writer does NOT set a prefix
-const MAX_SCAN = 2000;               // total blobs we’ll scan
-const DEFAULT_LIMIT = 100;           // cap recent rows
-const SERIES_POINTS = 50;            // points per location for charts
-// ================================================================
+const STORE = "acx_matrix";
+const KEY_PREFIX = "matrix:";
+const MAX_SCAN = 2000;
+const DEFAULT_LIMIT = 100;
+const SERIES_POINTS = 50;
 
 export default async (req) => {
-  if (req.method !== "GET") return methodNotAllowed();
-  if (!checkAuth(req)) return unauthorized();
+  // Require login session
+  if (!readSession(req)) return new Response(JSON.stringify({ ok:false }), { status:401 });
+
+  if (req.method !== "GET")
+    return new Response(JSON.stringify({ ok:false, error:"Method Not Allowed" }), { status:405 });
 
   const url = new URL(req.url);
-  const limit = Math.min(
-    Number(url.searchParams.get("limit") || DEFAULT_LIMIT),
-    DEFAULT_LIMIT
-  );
+  const limit = Math.min(Number(url.searchParams.get("limit") || DEFAULT_LIMIT), DEFAULT_LIMIT);
 
   const store = getStore(STORE);
 
-  // 1) List blobs (conditionally apply prefix only if truthy)
+  // Gather blob list (newest later—will sort)
   let cursor = undefined;
   const all = [];
   while (all.length < MAX_SCAN) {
-    const listOpts = { cursor, limit: 200 };
-    if (KEY_PREFIX) listOpts.prefix = KEY_PREFIX; // important: only if non-empty
-    const page = await store.list(listOpts);
-    for (const b of (page.blobs || [])) all.push(b);
+    const page = await store.list({ prefix: KEY_PREFIX, cursor, limit: 200 });
+    (page.blobs || []).forEach(b => all.push(b));
     cursor = page.cursor;
     if (!cursor) break;
   }
 
-  // Nothing yet?
-  if (all.length === 0) {
-    return json({
-      ok: true,
-      recent: [],
-      locations: [],
-      series: {}
-    });
-  }
+  // Newest first
+  all.sort((a,b) => (b.uploadedAt > a.uploadedAt ? 1 : -1));
 
-  // 2) Sort newest->oldest by uploadedAt ISO
-  all.sort((a, b) => (b.uploadedAt > a.uploadedAt ? 1 : -1));
-
-  // 3) Fetch bodies for top N recent rows
+  // Load top N
   const top = all.slice(0, Math.min(limit, all.length));
-  const recentRows = [];
+  const rows = [];
   for (const b of top) {
     const res = await store.get(b.key);
     if (!res) continue;
-    try {
-      recentRows.push(await res.json());
-    } catch (_) {}
+    try { rows.push(await res.json()); } catch {}
   }
 
-  // 4) Build per-location latest snapshot + small time series (lazy fill)
-  const seriesMap = new Map();   // loc -> [{ts,uptime,conv,resp,quotes,integrity}]
-  const countsMap = new Map();   // loc -> count filled
-  const latestMap = new Map();   // loc -> latest snapshot
+  // Per-location latest + series
+  const seriesMap = new Map(); // loc -> [{ts, uptime, conv, resp, quotes, integrity}]
+  const latestMap = new Map();
+  const counts = new Map();
 
   for (const b of all) {
     const res = await store.get(b.key);
     if (!res) continue;
-
-    let item;
-    try { item = await res.json(); } catch { continue; }
+    let item; try { item = await res.json(); } catch { continue; }
 
     const loc = item.location || item.location_id || "unknown";
     const acc = item.account || item.account_name || "unknown";
 
-    // latest snapshot (first time we see a location in newest->oldest order)
     if (!latestMap.has(loc)) {
       latestMap.set(loc, {
         location: loc,
@@ -98,48 +68,37 @@ export default async (req) => {
       });
     }
 
-    // initialize series holders
     if (!seriesMap.has(loc)) seriesMap.set(loc, []);
-    if (!countsMap.has(loc)) countsMap.set(loc, 0);
-
-    // append to series up to SERIES_POINTS
-    const filled = countsMap.get(loc);
-    if (filled < SERIES_POINTS) {
+    if (!counts.has(loc)) counts.set(loc, 0);
+    const n = counts.get(loc);
+    if (n < SERIES_POINTS) {
       seriesMap.get(loc).push({
         ts: item.ts || b.uploadedAt,
         uptime: Number(item.uptime || 0),
         conv: Number(item.conversion || 0),
         resp: Number(item.response_ms || 0),
         quotes: Number(item.quotes_recovered || 0),
-        integrity: (item.integrity || "").toLowerCase(),
+        integrity: (item.integrity || "").toLowerCase()
       });
-      countsMap.set(loc, filled + 1);
+      counts.set(loc, n+1);
     }
 
-    // early exit if every location reached the point cap AND we already read recentRows
-    let allFilled = true;
-    for (const v of countsMap.values()) {
-      if (v < SERIES_POINTS) { allFilled = false; break; }
-    }
-    if (allFilled && recentRows.length >= limit) break;
+    // Early stop if all series filled and we already read enough for table
+    let done = true;
+    for (const [, c] of counts) { if (c < SERIES_POINTS) { done = false; break; } }
+    if (done && rows.length >= limit) break;
   }
 
-  // Normalize series oldest->newest
-  for (const arr of seriesMap.values()) {
-    arr.sort((a, b) => (a.ts > b.ts ? 1 : -1));
-  }
+  for (const [, arr] of seriesMap) arr.sort((a,b)=> (a.ts > b.ts ? 1 : -1));
 
-  // Rank latest locations by severity then uptime
-  const sevOrder = { critical: 3, degraded: 2, optimal: 1, unknown: 0 };
-  const locations = [...latestMap.values()].sort((a, b) => {
-    const sa = sevOrder[a.integrity] ?? 0;
-    const sb = sevOrder[b.integrity] ?? 0;
+  const sevOrder = { critical:3, degraded:2, optimal:1, unknown:0 };
+  const locations = [...latestMap.values()].sort((a,b) => {
+    const sa = sevOrder[a.integrity] ?? 0, sb = sevOrder[b.integrity] ?? 0;
     if (sa !== sb) return sb - sa;
     return (b.uptime || 0) - (a.uptime || 0);
   });
 
-  // Normalize recent rows for the table
-  const outRows = recentRows.map(r => ({
+  const outRows = rows.map(r => ({
     ts: r.ts || null,
     account: r.account || r.account_name || "",
     location: r.location || r.location_id || "",
@@ -151,18 +110,10 @@ export default async (req) => {
     run_id: r.run_id || ""
   }));
 
-  return json({
-    ok: true,
+  return new Response(JSON.stringify({
+    ok:true,
     recent: outRows,
     locations,
-    series: Object.fromEntries(seriesMap),
-  });
+    series: Object.fromEntries(seriesMap)
+  }), { headers: { "Content-Type":"application/json" }});
 };
-
-// Utility
-function json(obj, status = 200) {
-  return new Response(JSON.stringify(obj), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
