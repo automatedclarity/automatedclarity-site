@@ -2,7 +2,7 @@ import { checkAuth, unauthorized, methodNotAllowed } from "./_lib/auth.js";
 import { getStore } from "@netlify/blobs";
 
 const STORE = process.env.ACX_BLOBS_STORE || "acx-matrix";
-const PFX   = "event:"; // ← SAME PREFIX
+const PFX   = "event:"; // SAME PREFIX
 
 export default async (req) => {
   if (req.method !== "GET") return methodNotAllowed();
@@ -11,7 +11,7 @@ export default async (req) => {
   const url = new URL(req.url);
   const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit") || 5), 500));
 
-  const store = getStore({ name: STORE });
+  const store = getStore(STORE); // positional
   const page = await store.list({ prefix: PFX, limit: 1000 });
   const blobs = (page.blobs || []).sort((a,b) => (b.uploadedAt > a.uploadedAt ? 1 : -1));
   const top = blobs.slice(0, limit);
