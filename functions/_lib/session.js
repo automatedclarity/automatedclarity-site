@@ -1,7 +1,8 @@
+// functions/_lib/session.js
 import crypto from "node:crypto";
 
 const NAME = "ACX_DASH_SESSION";
-const MAX_AGE = 60 * 60 * 24 * 30; // 30d
+const MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
 export function cookieName(){ return NAME; }
 
