@@ -1,30 +1,41 @@
-import { checkAuth, unauthorized, methodNotAllowed } from "./_lib/auth.js";
+// netlify/functions/acx-matrix-recent.js
+// Returns recent ACX Matrix runs for the internal console UI
+
 import { getStore } from "@netlify/blobs";
 
-const STORE = process.env.ACX_BLOBS_STORE || "acx-matrix";
-const PFX   = "event:"; // ← SAME PREFIX
-
 export default async (req) => {
-  if (req.method !== "GET") return methodNotAllowed();
-  if (!checkAuth(req)) return unauthorized();
-
-  const url = new URL(req.url);
-  const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit") || 5), 500));
-
-  const store = getStore({ name: STORE });
-  const page = await store.list({ prefix: PFX, limit: 1000 });
-  const blobs = (page.blobs || []).sort((a,b) => (b.uploadedAt > a.uploadedAt ? 1 : -1));
-  const top = blobs.slice(0, limit);
-
-  const events = [];
-  for (const b of top) {
-    try {
-      const item = await store.get(b.key, { type: "json" }); // ← key fix
-      if (item) events.push(item);
-    } catch {}
+  if (req.method !== "GET") {
+    return new Response("Method Not Allowed", { status: 405 });
   }
 
-  return new Response(JSON.stringify({ ok: true, count: events.length, events }), {
-    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
+  const url = new URL(req.url);
+  const limitParam = url.searchParams.get("limit");
+  const limit = Math.min(Number(limitParam || 50), 200); // cap to 200
+
+  const store = getStore("acx-matrix-runs");
+
+  // List all blob keys in this store
+  const { blobs } = await store.list();
+
+  // Load each run as JSON
+  const runs = [];
+  for (const blob of blobs) {
+    const data = await store.get(blob.key, { type: "json" });
+    if (data && data.created_at) {
+      runs.push(data);
+    }
+  }
+
+  // Sort newest first
+  runs.sort((a, b) => {
+    if (!a.created_at || !b.created_at) return 0;
+    return a.created_at > b.created_at ? -1 : 1;
+  });
+
+  const sliced = runs.slice(0, limit);
+
+  return new Response(JSON.stringify({ runs: sliced }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" }
   });
 };
