@@ -1,4 +1,7 @@
-// netlify/functions/acx-matrix-ingest.js
+// netlify/functions/acx-matrix-webhook.js
+// ACX Matrix Webhook – ACX-only ingest + Netlify Blobs persistence
+
+import { getStore } from "@netlify/blobs";
 
 export default async (req) => {
   if (req.method !== "POST") {
@@ -31,39 +34,38 @@ export default async (req) => {
     matrix = {}
   } = body || {};
 
-  // Minimal ACX-only schema: usage, asset, health, guidance
+  // Minimal, empire-safe, ACX-only schema
   const cleanPayload = {
     account,
     location,
     period,
-    run_id,
+    run_id: run_id || `run-${Date.now()}`,
     engine: {
-      // How many people actually came through ACX doors this period
       contacts_through_acx: Number(engine.contacts_through_acx || 0),
-
-      // Total number of contacts grown inside ACX (never imported)
       list_size_total: Number(engine.list_size_total || 0),
-
-      // Contacts that haven't engaged in 90+ days
       dormant_90d: Number(engine.dormant_90d || 0)
     },
     sentinel: {
-      // "ok" | "warning" | "critical" | "unknown"
       status: (sentinel.status || "unknown").toString()
     },
     matrix: {
-      // Short human summary
       summary: (matrix.summary || "").toString(),
-
-      // One simple recommendation to increase ROI on ACX
       recommendation: (matrix.recommendation || "").toString(),
-
-      // Internal tags (e.g. ["octane_ready","low_usage"])
       tags: Array.isArray(matrix.tags) ? matrix.tags.map(String) : []
-    }
+    },
+    created_at: new Date().toISOString()
   };
 
   console.log("MATRIX_INGEST", cleanPayload);
+
+  try {
+    // Store each run as a JSON blob keyed by run_id
+    const store = getStore("acx-matrix-runs");
+    await store.setJSON(cleanPayload.run_id, cleanPayload);
+  } catch (e) {
+    console.error("MATRIX_INGEST: failed to write to blobs", e);
+    // We still return ok=true so one bad write doesn’t break webhooks
+  }
 
   return new Response(
     JSON.stringify({
