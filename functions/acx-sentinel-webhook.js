@@ -1,137 +1,76 @@
 // netlify/functions/acx-sentinel-webhook.js
 //
-// ACX SENTINEL — LOCKED DIAGNOSTIC/PRODUCTION VERSION
-// Objective: deterministic write of Sentinel ingest fields into GHL contact custom fields.
-// Guarantees:
-// - NEVER returns ok:true unless:
-//   (1) contact exists (GET /contacts/:id returns 200)
-//   (2) custom field IDs are present (env vars set)
-//   (3) update succeeds (PUT /contacts/:id returns 2xx)
-// - Returns locationId + cf_ids_present + upstream statuses so you can prove correctness.
+// ACX Sentinel Webhook — SELF-HEALING Custom Field ID Resolver
+// - No manual CF_* env vars required
+// - Resolves custom field IDs from GHL by field key/name at runtime
+// - Writes values ONLY after:
+//   1) contact exists
+//   2) custom field IDs resolved
+//   3) PUT update succeeds
 //
-// Requirements (Netlify Env Vars, ALL SCOPES):
-// - GHL_API_KEY  = pit-xxxxxxxxxxxxxxxxxxxxxxxx
-// - GHL_LOCATION_ID = jcvSMIE4EKinnyYFPmqm   (your actual location id)
-// - CF_ACX_CONSOLE_LOCATION_NAME = <custom field id>
-// - CF_ACX_CONSOLE_FAIL_STREAK   = <custom field id>
-// - CF_ACX_CONSOLE_LAST_REASON   = <custom field id>
-// - CF_ACX_STARTED_AT_STR        = <custom field id>
+// Required env:
+// - GHL_API_KEY
+// - GHL_LOCATION_ID
 //
-// Notes:
-// - We do NOT use email search (too many edge cases). We require contact_id.
-// - We do NOT include locationId/id in the PUT body (your 422 proved it’s forbidden on this endpoint).
-//
+// Optional env:
+// - ACX_CF_CACHE_TTL_MS (default 10 minutes)
+
+const BASE = "https://services.leadconnectorhq.com";
+const VERSION = "2021-07-28";
+
+const CACHE_TTL_MS = Number(process.env.ACX_CF_CACHE_TTL_MS || 10 * 60 * 1000);
+
+let cached = {
+  at: 0,
+  map: null, // { acx_console_location_name: 'id', ... }
+};
 
 export async function handler(event) {
-  const json = (statusCode, obj) => ({
-    statusCode,
+  const json = (code, obj) => ({
+    statusCode: code,
     headers: { "Content-Type": "application/json; charset=utf-8" },
     body: JSON.stringify(obj),
   });
 
   try {
-    // 0) Method gate
-    if (event.httpMethod !== "POST") {
-      return json(405, { ok: false, error: "method_not_allowed" });
-    }
+    if (event.httpMethod !== "POST") return json(405, { ok: false, error: "method_not_allowed" });
 
-    // 1) Env
-    const GHL_API_KEY = process.env.GHL_API_KEY; // PIT token
+    const GHL_API_KEY = process.env.GHL_API_KEY;
     const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
-
-    const CF_ACX_CONSOLE_LOCATION_NAME = process.env.CF_ACX_CONSOLE_LOCATION_NAME;
-    const CF_ACX_CONSOLE_FAIL_STREAK = process.env.CF_ACX_CONSOLE_FAIL_STREAK;
-    const CF_ACX_CONSOLE_LAST_REASON = process.env.CF_ACX_CONSOLE_LAST_REASON;
-    const CF_ACX_STARTED_AT_STR = process.env.CF_ACX_STARTED_AT_STR;
-
-    const missingEnv = [];
-    if (!GHL_API_KEY) missingEnv.push("GHL_API_KEY");
-    if (!GHL_LOCATION_ID) missingEnv.push("GHL_LOCATION_ID");
-
-    const missingCF = [];
-    if (!CF_ACX_CONSOLE_LOCATION_NAME) missingCF.push("CF_ACX_CONSOLE_LOCATION_NAME");
-    if (!CF_ACX_CONSOLE_FAIL_STREAK) missingCF.push("CF_ACX_CONSOLE_FAIL_STREAK");
-    if (!CF_ACX_CONSOLE_LAST_REASON) missingCF.push("CF_ACX_CONSOLE_LAST_REASON");
-    if (!CF_ACX_STARTED_AT_STR) missingCF.push("CF_ACX_STARTED_AT_STR");
-
-    if (missingEnv.length) {
-      return json(500, { ok: false, error: "missing_env", missing: missingEnv });
-    }
-    if (missingCF.length) {
-      return json(500, { ok: false, error: "missing_custom_field_ids", missing: missingCF });
+    if (!GHL_API_KEY || !GHL_LOCATION_ID) {
+      return json(500, { ok: false, error: "missing_env", missing: { GHL_API_KEY: !!GHL_API_KEY, GHL_LOCATION_ID: !!GHL_LOCATION_ID } });
     }
 
-    // 2) Parse body
-    let body = {};
-    try {
-      body = JSON.parse(event.body || "{}");
-    } catch {
-      return json(400, { ok: false, error: "invalid_json" });
+    let body;
+    try { body = JSON.parse(event.body || "{}"); }
+    catch { return json(400, { ok: false, error: "invalid_json" }); }
+
+    const contactId = body.contact_id || body.contactId;
+    if (!contactId) return json(400, { ok: false, error: "missing_contact_id" });
+
+    const failStreak = Number(body.acx_console_fail_streak);
+    if (!Number.isFinite(failStreak)) {
+      return json(400, { ok: false, error: "invalid_fail_streak_number", received: body.acx_console_fail_streak });
     }
 
-    // 3) Required identifier
-    const contactId =
-      body.contact_id ||
-      body.contactId ||
-      body.ghl_contact_id ||
-      null;
-
-    if (!contactId) {
-      return json(400, { ok: false, error: "missing_contact_id" });
-    }
-
-    // 4) Validate fail streak must be NUMBER
-    const failStreakNum = Number(body.acx_console_fail_streak);
-    if (!Number.isFinite(failStreakNum)) {
-      return json(400, {
-        ok: false,
-        error: "invalid_fail_streak_number",
-        received: body.acx_console_fail_streak,
-      });
-    }
-
-    // 5) Build payload (custom fields)
-    const customFields = [
-      { id: CF_ACX_CONSOLE_LOCATION_NAME, value: String(body.acx_console_location_name || "") },
-      { id: CF_ACX_CONSOLE_FAIL_STREAK, value: failStreakNum }, // NUMBER ONLY
-      { id: CF_ACX_CONSOLE_LAST_REASON, value: String(body.acx_console_last_reason || "") },
-      { id: CF_ACX_STARTED_AT_STR, value: String(body.acx_started_at_str || "") },
-    ];
-
-    // 6) HTTP headers
     const headers = {
       Authorization: `Bearer ${GHL_API_KEY}`,
-      Version: "2021-07-28",
+      Version: VERSION,
       "Content-Type": "application/json",
       Accept: "application/json",
     };
 
-    const BASE = "https://services.leadconnectorhq.com";
-
-    // 7) PROVE contact exists + token has access
-    const getUrl = `${BASE}/contacts/${encodeURIComponent(contactId)}`;
-    const getRes = await fetch(getUrl, { method: "GET", headers });
+    // 1) PROVE contact exists
+    const getRes = await fetch(`${BASE}/contacts/${encodeURIComponent(contactId)}`, { method: "GET", headers });
     const getText = await getRes.text();
-
+    const getJson = safeParse(getText);
     if (!getRes.ok) {
-      return json(404, {
-        ok: false,
-        error: "contact_not_found_by_id",
-        locationId: GHL_LOCATION_ID,
-        contactId,
-        upstream: { url: getUrl, status: getRes.status, body: safeParse(getText) ?? getText },
-      });
+      return json(404, { ok: false, error: "contact_not_found_by_id", upstream: { status: getRes.status, body: getJson ?? getText } });
     }
 
-    // Optional: enforce correct location by checking contact payload (if returned)
-    const getJson = safeParse(getText);
     const contactLocationId =
-      getJson?.contact?.locationId ||
-      getJson?.locationId ||
-      getJson?.contact?.location_id ||
-      null;
+      getJson?.contact?.locationId || getJson?.locationId || null;
 
-    // If GHL returns locationId and it doesn't match env, hard-fail (prevents writing to wrong location context)
     if (contactLocationId && String(contactLocationId) !== String(GHL_LOCATION_ID)) {
       return json(409, {
         ok: false,
@@ -142,61 +81,103 @@ export async function handler(event) {
       });
     }
 
-    // 8) UPDATE (NO locationId/id in body)
-    const putUrl = `${BASE}/contacts/${encodeURIComponent(contactId)}`;
-    const updatePayload = { customFields };
+    // 2) Resolve Custom Field IDs (self-heal)
+    const cfMap = await resolveCustomFieldIds(headers);
 
-    const putRes = await fetch(putUrl, {
+    // 3) Build update payload
+    const customFields = [
+      { id: cfMap.acx_console_location_name, value: String(body.acx_console_location_name || "") },
+      { id: cfMap.acx_console_fail_streak, value: failStreak }, // NUMBER ONLY
+      { id: cfMap.acx_console_last_reason, value: String(body.acx_console_last_reason || "") },
+      { id: cfMap.acx_started_at_str, value: String(body.acx_started_at_str || "") },
+    ];
+
+    // 4) PUT update — IMPORTANT: body contains ONLY customFields
+    const putRes = await fetch(`${BASE}/contacts/${encodeURIComponent(contactId)}`, {
       method: "PUT",
       headers,
-      body: JSON.stringify(updatePayload),
+      body: JSON.stringify({ customFields }),
     });
 
     const putText = await putRes.text();
     const putJson = safeParse(putText);
-
     if (!putRes.ok) {
       return json(502, {
         ok: false,
         error: "update_failed",
-        locationId: GHL_LOCATION_ID,
-        contactId,
-        outbound: {
-          // show the exact ids we attempted (proves they are not undefined)
-          customFieldIds: customFields.map((f) => f.id),
-        },
-        upstream: { url: putUrl, status: putRes.status, body: putJson ?? putText },
+        upstream: { status: putRes.status, body: putJson ?? putText },
+        fieldIds: cfMap,
       });
     }
 
-    // 9) SUCCESS — only after GET + PUT succeeded
     return json(200, {
       ok: true,
       locationId: GHL_LOCATION_ID,
       contactId,
-      failStreak: failStreakNum,
-      cf_ids_present: {
-        loc: true,
-        streak: true,
-        reason: true,
-        started: true,
-      },
-      // tiny proof payload to show GHL returned something (optional)
-      update_response_has_json: putJson ? true : false,
+      failStreak,
+      fieldIds: cfMap,
     });
-  } catch (err) {
-    return json(500, {
-      ok: false,
-      error: "internal_error",
-      message: String(err),
-    });
+  } catch (e) {
+    return {
+      statusCode: 500,
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ ok: false, error: "internal_error", message: String(e) }),
+    };
   }
 }
 
-function safeParse(text) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
+// ---- Custom Field Resolver ----
+// We search GHL custom fields and map by a strict key list.
+// If your account has duplicates, we pick the FIRST exact match by "fieldKey" then by "name".
+
+async function resolveCustomFieldIds(headers) {
+  const now = Date.now();
+  if (cached.map && now - cached.at < CACHE_TTL_MS) return cached.map;
+
+  // Endpoint that returns custom fields (LeadConnector/GHL)
+  // NOTE: Some accounts return {customFields:[...]} and others {fields:[...]}.
+  const res = await fetch(`${BASE}/custom-fields/`, { method: "GET", headers });
+  const text = await res.text();
+  const data = safeParse(text);
+
+  if (!res.ok || !data) {
+    throw new Error(`custom_fields_fetch_failed status=${res.status} body=${text?.slice(0, 200)}`);
   }
+
+  const list = data.customFields || data.fields || data.custom_fields || [];
+  if (!Array.isArray(list) || list.length === 0) {
+    throw new Error(`custom_fields_empty`);
+  }
+
+  // What we need (keys + fallback names)
+  const targets = [
+    { key: "acx_console_location_name", names: ["acx_console_location_name", "ACX Console Location Name", "Console Location Name"] },
+    { key: "acx_console_fail_streak", names: ["acx_console_fail_streak", "ACX Console Fail Streak", "Console Fail Streak"] },
+    { key: "acx_console_last_reason", names: ["acx_console_last_reason", "ACX Console Last Reason", "Console Last Reason"] },
+    { key: "acx_started_at_str", names: ["acx_started_at_str", "ACX Started At Str", "Started At Str"] },
+  ];
+
+  const map = {};
+
+  for (const t of targets) {
+    const exactKey = list.find((f) => norm(f.fieldKey) === t.key);
+    const exactName = list.find((f) => t.names.includes(String(f.name || "").trim()));
+    const hit = exactKey || exactName;
+
+    if (!hit || !hit.id) {
+      throw new Error(`custom_field_not_found:${t.key}`);
+    }
+    map[t.key] = hit.id;
+  }
+
+  cached = { at: now, map };
+  return map;
+}
+
+function safeParse(text) {
+  try { return JSON.parse(text); } catch { return null; }
+}
+
+function norm(v) {
+  return String(v || "").trim();
 }
