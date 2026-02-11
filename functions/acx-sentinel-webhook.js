@@ -18,7 +18,6 @@ const pick = (obj, keys) => {
 };
 
 const toDateOnly = (d = new Date()) => {
-  // YYYY-MM-DD (safe for GHL Date custom fields)
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
@@ -61,7 +60,6 @@ export default async (req) => {
     pick(body, ["fail_streak", "failStreak", "streak"]) || ""
   );
 
-  // REQUIRED for deterministic custom-field ID lookup
   if (!locationId) {
     return json(400, { ok: false, error: "Missing location_id in payload" });
   }
@@ -98,7 +96,6 @@ export default async (req) => {
     fieldsJson = JSON.parse(fieldsText);
   } catch {}
 
-  // Different accounts return different shapes; support common ones
   const defs =
     fieldsJson?.customFields ||
     fieldsJson?.customField ||
@@ -112,10 +109,13 @@ export default async (req) => {
     if (key && f.id) keyToId.set(key, f.id);
   }
 
-  // Helper: only write if field id exists (prevents silent no-op)
+  // Helper: write by ID; also logs missing field keys to Netlify logs
   const setCF = (fieldKey, value) => {
     const id = keyToId.get(fieldKey);
-    if (!id) return null;
+    if (!id) {
+      console.log("MISSING FIELD KEY:", fieldKey, "locationId:", locationId);
+      return null;
+    }
     return { id, value: String(value ?? "") };
   };
 
@@ -127,17 +127,29 @@ export default async (req) => {
     setCF("acx_console_last_reason", reason),
     setCF("acx_console_fail_streak", failStreak),
     setCF("acx_console_last_ok", lastOkDate),
+
+    // THIS is the one you’re missing in the location (most likely)
     setCF("acx_started_at_str", startedAtStr),
   ].filter(Boolean);
 
-  if (customField.length === 0) {
-    return json(200, {
+  // Hard-fail if started_at_str is missing so you never “think it worked”
+  const startedAtId = keyToId.get("acx_started_at_str");
+  if (!startedAtId) {
+    return json(422, {
       ok: false,
       error:
-        "No matching custom field IDs found for your ACX keys on this location.",
-      hint:
-        "Confirm the custom fields exist in this sub-account/location and the keys match exactly (acx_started_at_str, acx_console_*, etc.).",
-      contact_id: contactId,
+        "Custom field key 'acx_started_at_str' not found in this location’s custom field definitions.",
+      location_id: locationId,
+      fix:
+        "Create Contact custom field with key/name exactly: acx_started_at_str in THIS sub-account/location.",
+      available_keys_sample: Array.from(keyToId.keys()).slice(0, 50),
+    });
+  }
+
+  if (customField.length === 0) {
+    return json(422, {
+      ok: false,
+      error: "No matching custom field IDs found for your ACX keys on this location.",
       location_id: locationId,
       received: body,
     });
