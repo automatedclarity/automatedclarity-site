@@ -30,14 +30,20 @@ export default async (req) => {
   if (!checkAuth(req)) return unauthorized();
 
   let body = {};
-  try { body = await req.json(); } catch {}
+  try {
+    body = await req.json();
+  } catch {}
 
   const contactId =
     pick(body, ["contact_id", "contactId"]) ||
     pick(body?.contact, ["id", "contact_id"]);
 
   if (!contactId) {
-    return json(400, { ok: false, error: "Missing contact_id in payload", received: body });
+    return json(400, {
+      ok: false,
+      error: "Missing contact_id in payload",
+      received: body,
+    });
   }
 
   const apiKey = process.env.LC_API_KEY;
@@ -51,42 +57,57 @@ export default async (req) => {
   const locationName = pick(body, ["location_name", "locationName"]);
   const status = pick(body, ["status", "console_status", "health_status"]);
   const reason = pick(body, ["reason", "last_reason", "fail_reason"]);
-  const failStreak = String(pick(body, ["fail_streak", "failStreak", "streak"]) || "");
+  const failStreak = String(
+    pick(body, ["fail_streak", "failStreak", "streak"]) || ""
+  );
+
+  // REQUIRED for deterministic custom-field ID lookup
+  if (!locationId) {
+    return json(400, { ok: false, error: "Missing location_id in payload" });
+  }
 
   const lastOkDate = toDateOnly(new Date());
   const startedAtStr = new Date().toISOString();
 
-  // ---- 1) Read contact to get custom field IDs ----
-  const readResp = await fetch(`${LC_BASE}/contacts/${encodeURIComponent(contactId)}`, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      Version: LC_VERSION,
-      Accept: "application/json",
-    },
-  });
+  // ---- 1) Read LOCATION custom field definitions to get IDs (deterministic) ----
+  const fieldsResp = await fetch(
+    `${LC_BASE}/locations/${encodeURIComponent(locationId)}/customFields`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Version: LC_VERSION,
+        Accept: "application/json",
+      },
+    }
+  );
 
-  const readText = await readResp.text();
-  if (!readResp.ok) {
-    return json(readResp.status, {
+  const fieldsText = await fieldsResp.text();
+  if (!fieldsResp.ok) {
+    return json(fieldsResp.status, {
       ok: false,
-      error: "Contact read failed",
-      status: readResp.status,
-      response: readText,
+      error: "Custom fields list read failed",
+      status: fieldsResp.status,
+      response: fieldsText,
+      location_id: locationId,
     });
   }
 
-  let contactJson = {};
-  try { contactJson = JSON.parse(readText); } catch {}
-  const contact = contactJson?.contact || contactJson || {};
+  let fieldsJson = {};
+  try {
+    fieldsJson = JSON.parse(fieldsText);
+  } catch {}
 
-  // LeadConnector usually returns customFields/customField on the contact; handle both
-  const existingCustom = contact.customFields || contact.customField || [];
+  // Different accounts return different shapes; support common ones
+  const defs =
+    fieldsJson?.customFields ||
+    fieldsJson?.customField ||
+    fieldsJson?.fields ||
+    [];
 
-  // Build a map: custom field KEY -> ID
-  // Many accounts return { id, fieldKey, value } or { id, key, value }
+  // Map: fieldKey -> id
   const keyToId = new Map();
-  for (const f of existingCustom) {
+  for (const f of defs) {
     const key = f.fieldKey || f.key || f.name;
     if (key && f.id) keyToId.set(key, f.id);
   }
@@ -112,24 +133,30 @@ export default async (req) => {
   if (customField.length === 0) {
     return json(200, {
       ok: false,
-      error: "No matching custom field IDs found on contact. Fields exist in your system but not on this contact payload.",
-      hint: "Open the contact via API and confirm it returns customFields with fieldKey + id for your ACX fields.",
+      error:
+        "No matching custom field IDs found for your ACX keys on this location.",
+      hint:
+        "Confirm the custom fields exist in this sub-account/location and the keys match exactly (acx_started_at_str, acx_console_*, etc.).",
       contact_id: contactId,
+      location_id: locationId,
       received: body,
     });
   }
 
   // ---- 2) Update contact with correct schema ----
-  const updateResp = await fetch(`${LC_BASE}/contacts/${encodeURIComponent(contactId)}`, {
-    method: "PUT",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      Version: LC_VERSION,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({ customField }),
-  });
+  const updateResp = await fetch(
+    `${LC_BASE}/contacts/${encodeURIComponent(contactId)}`,
+    {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Version: LC_VERSION,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ customField }),
+    }
+  );
 
   const updateText = await updateResp.text();
   if (!updateResp.ok) {
@@ -139,14 +166,17 @@ export default async (req) => {
       status: updateResp.status,
       response: updateText,
       sent: { customField },
+      contact_id: contactId,
+      location_id: locationId,
     });
   }
 
   return json(200, {
     ok: true,
-    message: "ACX Sentinel updated contact fields (ID-based)",
+    message: "ACX Sentinel updated contact fields (location-ID-based)",
     contact_id: contactId,
-    wrote: customField.map((x) => x.id),
-    wrote_keys: customField.length,
+    location_id: locationId,
+    wrote_count: customField.length,
+    wrote_ids: customField.map((x) => x.id),
   });
 };
