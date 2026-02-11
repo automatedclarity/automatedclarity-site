@@ -151,10 +151,11 @@ export default async (req) => {
   }
 
   return json(200, {
-    ok: true,
-    message: "ACX Sentinel updated contact fields (case-insensitive keys)",
-    contact_id: contactId,
-    location_id: locationId,
-    wrote_count: customField.length,
-  });
-};
+  ok: true,
+  contact_id: contactId,
+  location_id: locationId,
+  wrote_count: customField.length,
+  wrote_field_ids: customField.map((x) => x.id),
+  has_started_at_str_id: Boolean(keyToId.get("acx_started_at_str")),
+  started_at_str_value: startedAtStr,
+});
