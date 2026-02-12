@@ -1,130 +1,193 @@
 // netlify/functions/acx-sentinel-webhook.js
-export async function handler(event) {
-  const json = (statusCode, obj) => ({
-    statusCode,
-    headers: { "Content-Type": "application/json; charset=utf-8" },
-    body: JSON.stringify(obj),
-  });
+// ACX Sentinel → GHL Contact Custom Field writer
+// ✅ NO customFields fetch (no /locations/{id}/customFields calls)
+// ✅ Uses env-provided Custom Field IDs (CF_*)
+// ✅ Requires contact_id (keeps this deterministic + avoids search scope issues)
 
+const API_BASE = "https://services.leadconnectorhq.com";
+const API_VERSION = "2021-07-28";
+
+const json = (statusCode, obj) => ({
+  statusCode,
+  headers: {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-cache",
+  },
+  body: JSON.stringify(obj),
+});
+
+const pickHeader = (headers, name) => {
+  if (!headers) return undefined;
+  const key = Object.keys(headers).find((k) => k.toLowerCase() === name.toLowerCase());
+  return key ? headers[key] : undefined;
+};
+
+const safeJsonParse = (s) => {
   try {
-    if (event.httpMethod !== "POST") {
+    return { ok: true, value: JSON.parse(s || "{}") };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+};
+
+const requireEnv = (name) => {
+  const v = process.env[name];
+  if (!v) throw new Error(`missing_env_${name}`);
+  return v;
+};
+
+const asNumber = (v, fallback = 0) => {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return Number(v);
+  return fallback;
+};
+
+const ghaHeaders = (token) => ({
+  Authorization: `Bearer ${token}`,
+  Version: API_VERSION,
+  "Content-Type": "application/json",
+  Accept: "application/json",
+});
+
+async function httpJson(method, url, token, bodyObj) {
+  const res = await fetch(url, {
+    method,
+    headers: ghaHeaders(token),
+    body: bodyObj ? JSON.stringify(bodyObj) : undefined,
+  });
+  const text = await res.text();
+  let parsed = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = text;
+  }
+  return { status: res.status, ok: res.ok, body: parsed, raw: text };
+}
+
+// GET contact details (to enforce location match when you have GHL_LOCATION_ID set)
+async function ghlGetContact({ token, contactId }) {
+  // GHL v2: GET /contacts/{id}
+  const url = `${API_BASE}/contacts/${encodeURIComponent(contactId)}`;
+  return await httpJson("GET", url, token);
+}
+
+// UPDATE contact (customFields only; DO NOT include locationId/id in body)
+async function ghlUpdateContactCustomFields({ token, contactId, customFields }) {
+  const url = `${API_BASE}/contacts/${encodeURIComponent(contactId)}`;
+  return await httpJson("PUT", url, token, { customFields });
+}
+
+exports.handler = async (event) => {
+  try {
+    // --- optional webhook secret gate (recommended) ---
+    const secret = process.env.ACX_WEBHOOK_SECRET;
+    if (secret) {
+      const provided =
+        pickHeader(event.headers, "x-acx-secret") ||
+        pickHeader(event.headers, "x-webhook-secret") ||
+        (event.queryStringParameters && event.queryStringParameters.secret);
+
+      if (!provided || provided !== secret) {
+        return json(401, { ok: false, error: "unauthorized" });
+      }
+    }
+
+    if ((event.httpMethod || "").toUpperCase() !== "POST") {
       return json(405, { ok: false, error: "method_not_allowed" });
     }
 
-    const GHL_API_KEY = process.env.GHL_API_KEY;
-    const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID;
+    const parsed = safeJsonParse(event.body);
+    if (!parsed.ok) return json(400, { ok: false, error: "invalid_json" });
 
-    const CF_LOC = process.env.CF_ACX_CONSOLE_LOCATION_NAME;
-    const CF_STREAK = process.env.CF_ACX_CONSOLE_FAIL_STREAK;
-    const CF_REASON = process.env.CF_ACX_CONSOLE_LAST_REASON;
-    const CF_STARTED = process.env.CF_ACX_STARTED_AT_STR;
+    const body = parsed.value || {};
 
-    const missing = [];
-    if (!GHL_API_KEY) missing.push("GHL_API_KEY");
-    if (!GHL_LOCATION_ID) missing.push("GHL_LOCATION_ID");
-    if (!CF_LOC) missing.push("CF_ACX_CONSOLE_LOCATION_NAME");
-    if (!CF_STREAK) missing.push("CF_ACX_CONSOLE_FAIL_STREAK");
-    if (!CF_REASON) missing.push("CF_ACX_CONSOLE_LAST_REASON");
-    if (!CF_STARTED) missing.push("CF_ACX_STARTED_AT_STR");
-
-    if (missing.length) {
-      return json(500, { ok: false, error: "missing_env", missing });
+    // --- required input (deterministic) ---
+    const contactId = body.contact_id || body.contactId || body.id;
+    if (!contactId) {
+      return json(400, { ok: false, error: "missing_contact_identifier", required: ["contact_id"] });
     }
 
-    let body = {};
-    try { body = JSON.parse(event.body || "{}"); }
-    catch { return json(400, { ok: false, error: "invalid_json" }); }
+    // --- numeric fail streak (MUST BE NUMBER) ---
+    const failStreak = asNumber(body.acx_console_fail_streak, 0);
 
-    const contactId = body.contact_id || body.contactId;
-    if (!contactId) return json(400, { ok: false, error: "missing_contact_id" });
+    // --- values to write ---
+    const locationName = String(body.acx_console_location_name || "");
+    const lastReason = String(body.acx_console_last_reason || "");
+    const startedAtStr = String(body.acx_started_at_str || "");
 
-    const failStreakNum = Number(body.acx_console_fail_streak);
-    if (!Number.isFinite(failStreakNum)) {
-      return json(400, { ok: false, error: "invalid_fail_streak_number", received: body.acx_console_fail_streak });
+    // --- env ---
+    const token = requireEnv("GHL_API_KEY");
+
+    // Custom Field IDs (these are the numeric/uuid IDs from GHL settings)
+    // Put these in Netlify env vars.
+    const CF_LOCATION_NAME = requireEnv("CF_ACX_CONSOLE_LOCATION_NAME");
+    const CF_FAIL_STREAK = requireEnv("CF_ACX_CONSOLE_FAIL_STREAK");
+    const CF_LAST_REASON = requireEnv("CF_ACX_CONSOLE_LAST_REASON");
+    const CF_STARTED_AT_STR = requireEnv("CF_ACX_STARTED_AT_STR");
+
+    // Optional: enforce the contact belongs to the expected location (prevents writing into wrong subaccount)
+    const expectedLocationId = process.env.GHL_LOCATION_ID;
+
+    if (expectedLocationId) {
+      const getRes = await ghlGetContact({ token, contactId });
+      if (!getRes.ok) {
+        return json(502, {
+          ok: false,
+          error: "contact_fetch_failed",
+          status: getRes.status,
+          body: getRes.body,
+        });
+      }
+
+      const contactLocationId =
+        getRes.body?.contact?.locationId ||
+        getRes.body?.locationId ||
+        getRes.body?.contact?.location_id ||
+        null;
+
+      if (contactLocationId && contactLocationId !== expectedLocationId) {
+        return json(409, {
+          ok: false,
+          error: "location_mismatch",
+          expectedLocationId,
+          contactLocationId,
+          contactId,
+        });
+      }
     }
 
-    const headers = {
-      Authorization: `Bearer ${GHL_API_KEY}`,
-      Version: "2021-07-28",
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    };
+    // Build ONLY the fields we actually have values for (avoid blank overwrites if you don’t want them)
+    const customFields = [];
 
-    const BASE = "https://services.leadconnectorhq.com";
+    if (locationName) customFields.push({ id: CF_LOCATION_NAME, value: locationName });
+    customFields.push({ id: CF_FAIL_STREAK, value: failStreak }); // ALWAYS numeric
+    if (lastReason) customFields.push({ id: CF_LAST_REASON, value: lastReason });
+    if (startedAtStr) customFields.push({ id: CF_STARTED_AT_STR, value: startedAtStr });
 
-    // 1) GET contact to prove it exists + enforce location match
-    const getRes = await fetch(`${BASE}/contacts/${encodeURIComponent(contactId)}`, { method: "GET", headers });
-    const getText = await getRes.text();
-    const getJson = safeParse(getText);
+    const updRes = await ghlUpdateContactCustomFields({ token, contactId, customFields });
 
-    if (!getRes.ok) {
-      return json(404, { ok: false, error: "contact_not_found_by_id", upstream: { status: getRes.status, body: getJson || getText } });
-    }
-
-    const contactLocationId =
-      getJson?.contact?.locationId ||
-      getJson?.locationId ||
-      null;
-
-    if (contactLocationId && String(contactLocationId) !== String(GHL_LOCATION_ID)) {
-      return json(409, {
-        ok: false,
-        error: "location_mismatch",
-        expectedLocationId: GHL_LOCATION_ID,
-        contactLocationId,
-        contactId,
-      });
-    }
-
-    // 2) PUT update (NO locationId/id in body)
-    const customFields = [
-      { id: CF_LOC, value: String(body.acx_console_location_name || "") },
-      { id: CF_STREAK, value: failStreakNum },
-      { id: CF_REASON, value: String(body.acx_console_last_reason || "") },
-      { id: CF_STARTED, value: String(body.acx_started_at_str || "") },
-    ];
-
-    const putRes = await fetch(`${BASE}/contacts/${encodeURIComponent(contactId)}`, {
-      method: "PUT",
-      headers,
-      body: JSON.stringify({ customFields }),
-    });
-
-    const putText = await putRes.text();
-    const putJson = safeParse(putText);
-
-    if (!putRes.ok) {
+    if (!updRes.ok) {
       return json(502, {
         ok: false,
-        error: "update_failed",
-        upstream: { status: putRes.status, body: putJson || putText },
-        fieldIdsUsed: {
-          location_name: CF_LOC,
-          fail_streak: CF_STREAK,
-          last_reason: CF_REASON,
-          started_at_str: CF_STARTED,
-        },
+        error: "ghl_update_failed",
+        status: updRes.status,
+        body: updRes.body,
       });
     }
 
-    // 3) Return proof of exactly which fields we wrote
     return json(200, {
       ok: true,
-      locationId: GHL_LOCATION_ID,
       contactId,
-      failStreak: failStreakNum,
+      failStreak,
       fieldIdsUsed: {
-        location_name: CF_LOC,
-        fail_streak: CF_STREAK,
-        last_reason: CF_REASON,
-        started_at_str: CF_STARTED,
+        location_name: CF_LOCATION_NAME,
+        fail_streak: CF_FAIL_STREAK,
+        last_reason: CF_LAST_REASON,
+        started_at_str: CF_STARTED_AT_STR,
       },
     });
-  } catch (err) {
-    return json(500, { ok: false, error: "internal_error", message: String(err) });
+  } catch (e) {
+    return json(500, { ok: false, error: "internal_error", message: String(e) });
   }
-}
-
-function safeParse(text) {
-  try { return JSON.parse(text); } catch { return null; }
-}
+};
