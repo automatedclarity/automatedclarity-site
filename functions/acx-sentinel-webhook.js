@@ -1,32 +1,20 @@
 // netlify/functions/acx-sentinel-webhook.js
 // ACX Sentinel — Contact Writeback (Production Safe)
 // - Resolves custom field IDs at runtime (no manual IDs)
-// - Deterministic writes + post-write verification
-// - Scales across hundreds of subaccounts (per-location token + per-location cache)
+// - Writes deterministically
+// - Verifies read-after-write
+// - Adds operator-friendly local time field: acx_started_at_local
 
 const DEFAULT_API_BASE = "https://services.leadconnectorhq.com";
 const DEFAULT_API_VERSION = "2021-07-28";
 
 const FIELD_SPECS = [
-  {
-    key: "acx_started_at_str",
-    aliases: ["acx_started_at_str", "acx started at str", "acx started at (str)", "acx started at"],
-  },
-  {
-    key: "acx_console_fail_streak",
-    aliases: ["acx_console_fail_streak", "acx console fail streak", "console fail streak", "fail streak"],
-  },
+  { key: "acx_started_at_str", aliases: ["acx_started_at_str", "acx started at str", "acx started at"] },
+  { key: "acx_started_at_local", aliases: ["acx_started_at_local", "acx started at local", "detected local"] },
+  { key: "acx_console_fail_streak", aliases: ["acx_console_fail_streak", "acx console fail streak", "fail streak"] },
 ];
 
-// In-memory cache (survives warm invocations)
-const cache = {
-  // locationId: { expiresAt: ms, fieldsByNormalized: Map(normalizedNameOrKey -> fieldObj), fieldsById: Map(id -> fieldObj) }
-  customFields: new Map(),
-};
-
-function nowMs() {
-  return Date.now();
-}
+const cache = { customFields: new Map() };
 
 function normalizeKey(s) {
   return String(s || "")
@@ -39,24 +27,17 @@ function normalizeKey(s) {
 }
 
 function safeJsonParse(raw) {
-  try {
-    return { ok: true, value: JSON.parse(raw) };
-  } catch (e) {
-    return { ok: false, error: e };
-  }
+  try { return { ok: true, value: JSON.parse(raw) }; }
+  catch (e) { return { ok: false, error: e }; }
 }
 
 function getEnv(name, required = false) {
   const v = process.env[name];
-  if (required && (!v || !String(v).trim())) {
-    throw new Error(`Missing required env var: ${name}`);
-  }
+  if (required && (!v || !String(v).trim())) throw new Error(`Missing required env var: ${name}`);
   return v;
 }
 
 function buildHeaders(token) {
-  // Docs/examples show Version header is required for v2 endpoints with private integration / location tokens.
-  // Authorization should be Bearer <TOKEN> in most tooling; some examples omit "Bearer" but Bearer is standard.
   return {
     Accept: "application/json",
     "Content-Type": "application/json",
@@ -71,7 +52,6 @@ async function httpJson(method, url, headers, bodyObj) {
 
   const res = await fetch(url, init);
   const text = await res.text();
-
   const parsed = safeJsonParse(text);
   const json = parsed.ok ? parsed.value : null;
 
@@ -81,7 +61,6 @@ async function httpJson(method, url, headers, bodyObj) {
     err.details = json || text;
     throw err;
   }
-
   return json ?? {};
 }
 
@@ -94,57 +73,46 @@ function pickFirst(obj, keys) {
 
 function coerceInt(val, fallback = 0) {
   const n = Number(val);
-  if (Number.isFinite(n)) return Math.trunc(n);
-  return fallback;
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
 
-function coerceString(val, fallback = "") {
-  if (val === undefined || val === null) return fallback;
-  const s = String(val);
-  return s;
-}
-
-function toStartedAtString(payload) {
-  // Deterministic string output.
-  // Priority:
-  // 1) payload.acx_started_at_str (already formatted)
-  // 2) payload.acx_started_at (ISO/ms/seconds)
-  // 3) payload.started_at (ISO/ms/seconds)
-  // 4) now ISO
+function toStartedAtISO(payload) {
   const direct = pickFirst(payload, ["acx_started_at_str"]);
-  if (direct !== undefined) return coerceString(direct, "");
+  if (direct !== undefined) return String(direct);
 
   const raw = pickFirst(payload, ["acx_started_at", "started_at", "acx_started_at_ms", "started_at_ms"]);
   if (raw === undefined) return new Date().toISOString();
 
-  // If numeric, detect seconds vs ms.
   if (typeof raw === "number" || /^[0-9]+$/.test(String(raw).trim())) {
     const num = Number(raw);
     if (Number.isFinite(num)) {
-      const ms = num < 2_000_000_000 ? num * 1000 : num; // < ~2033 in seconds => seconds
+      const ms = num < 2_000_000_000 ? num * 1000 : num;
       const d = new Date(ms);
       if (!Number.isNaN(d.getTime())) return d.toISOString();
     }
   }
 
-  // If parseable date string
   const d2 = new Date(String(raw));
   if (!Number.isNaN(d2.getTime())) return d2.toISOString();
 
   return new Date().toISOString();
 }
 
+function toLocalTimeString(isoString) {
+  const tz = process.env.ACX_TZ || "America/Vancouver";
+  const d = new Date(isoString);
+  if (Number.isNaN(d.getTime())) return String(isoString);
+  return d.toLocaleString("en-CA", { timeZone: tz });
+}
+
 async function getCustomFieldsForLocation({ apiBase, locationId, token }) {
   const cached = cache.customFields.get(locationId);
-  if (cached && cached.expiresAt > nowMs()) return cached;
+  if (cached && cached.expiresAt > Date.now()) return cached;
 
   const headers = buildHeaders(token);
-
-  // GET /locations/:locationId/customFields
   const url = `${apiBase}/locations/${encodeURIComponent(locationId)}/customFields`;
   const data = await httpJson("GET", url, headers);
 
-  // Response shape can vary; normalize into an array.
   const list =
     (Array.isArray(data?.customFields) && data.customFields) ||
     (Array.isArray(data?.fields) && data.fields) ||
@@ -153,29 +121,24 @@ async function getCustomFieldsForLocation({ apiBase, locationId, token }) {
     [];
 
   const fieldsByNormalized = new Map();
-  const fieldsById = new Map();
 
   for (const f of list) {
-    if (!f) continue;
-
-    const id = f.id || f._id || f.fieldId;
+    const id = f?.id || f?._id || f?.fieldId;
     if (!id) continue;
 
-    const name = f.name || f.fieldName || "";
-    const key = f.fieldKey || f.key || f.slug || "";
+    const name = f?.name || f?.fieldName || "";
+    const key = f?.fieldKey || f?.key || f?.slug || "";
 
     const nName = normalizeKey(name);
     const nKey = normalizeKey(key);
 
     if (nName) fieldsByNormalized.set(nName, f);
     if (nKey) fieldsByNormalized.set(nKey, f);
-    fieldsById.set(String(id), f);
   }
 
   const entry = {
-    expiresAt: nowMs() + 15 * 60 * 1000, // 15 min cache
+    expiresAt: Date.now() + 15 * 60 * 1000,
     fieldsByNormalized,
-    fieldsById,
     rawCount: list.length,
   };
 
@@ -183,37 +146,28 @@ async function getCustomFieldsForLocation({ apiBase, locationId, token }) {
   return entry;
 }
 
-function resolveFieldIds(customFieldCache) {
+function resolveFieldIds(cfCache) {
   const resolved = {};
   const missing = [];
 
   for (const spec of FIELD_SPECS) {
     const candidates = [spec.key, ...(spec.aliases || [])].map(normalizeKey);
-
     let fieldObj = null;
+
     for (const c of candidates) {
-      if (!c) continue;
-      const found = customFieldCache.fieldsByNormalized.get(c);
-      if (found) {
-        fieldObj = found;
-        break;
-      }
+      const found = cfCache.fieldsByNormalized.get(c);
+      if (found) { fieldObj = found; break; }
     }
 
     const id = fieldObj?.id || fieldObj?._id || fieldObj?.fieldId;
-    if (!id) {
-      missing.push(spec.key);
-      continue;
-    }
+    if (!id) { missing.push(spec.key); continue; }
 
     resolved[spec.key] = String(id);
   }
 
   if (missing.length) {
     const err = new Error(
-      `Missing required custom fields in this subaccount: ${missing.join(
-        ", "
-      )}. Create them in the location, then retry.`
+      `Missing required custom fields in this subaccount: ${missing.join(", ")}. Create them, then retry.`
     );
     err.code = "MISSING_CUSTOM_FIELDS";
     throw err;
@@ -224,15 +178,8 @@ function resolveFieldIds(customFieldCache) {
 
 async function updateContactCustomFields({ apiBase, contactId, token, customFieldsPayload }) {
   const headers = buildHeaders(token);
-
-  // PUT /contacts/:contactId
   const url = `${apiBase}/contacts/${encodeURIComponent(contactId)}`;
-
-  // Workaround proven in the field: { customFields: [{ id, field_value }] }
-  // (Do NOT send "value" — many integrations require "field_value".)
-  const body = { customFields: customFieldsPayload };
-
-  return await httpJson("PUT", url, headers, body);
+  return await httpJson("PUT", url, headers, { customFields: customFieldsPayload });
 }
 
 async function getContact({ apiBase, contactId, token }) {
@@ -243,17 +190,12 @@ async function getContact({ apiBase, contactId, token }) {
 
 function extractContactCustomFieldValue(contactObj, fieldId) {
   const idStr = String(fieldId);
-
-  // Common response shapes:
-  // - contact.customFields = [{id, value/field_value}, ...]
-  // - contact.customField = ...
-  // - contact.additionalFields?.customFields?.values = [{fieldId, value}, ...]
   const c = contactObj?.contact || contactObj;
 
   const arr1 = Array.isArray(c?.customFields) ? c.customFields : null;
   if (arr1) {
     const hit = arr1.find((x) => x && String(x.id || x.fieldId) === idStr);
-    if (hit) return hit.field_value ?? hit.value ?? hit.fieldValue ?? hit.fieldValueRaw ?? null;
+    if (hit) return hit.field_value ?? hit.value ?? null;
   }
 
   const arr2 = Array.isArray(c?.additionalFields?.customFields?.values)
@@ -264,7 +206,6 @@ function extractContactCustomFieldValue(contactObj, fieldId) {
     if (hit) return hit.value ?? hit.field_value ?? null;
   }
 
-  // Some payloads flatten custom fields into a map keyed by field key/name; we can’t reliably resolve that here.
   return null;
 }
 
@@ -274,89 +215,51 @@ exports.handler = async (event) => {
     const defaultLocationId = getEnv("GHL_LOCATION_ID") || "";
     const token = getEnv("GHL_LOCATION_TOKEN", true);
 
-    // Parse inbound
     const rawBody = event.isBase64Encoded
       ? Buffer.from(event.body || "", "base64").toString("utf8")
       : event.body || "";
 
     const parsed = safeJsonParse(rawBody);
     if (!parsed.ok || !parsed.value || typeof parsed.value !== "object") {
-      return {
-        statusCode: 400,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ok: false,
-          error: "Invalid JSON body",
-        }),
-      };
+      return { statusCode: 400, body: JSON.stringify({ ok: false, error: "Invalid JSON body" }) };
     }
 
     const payload = parsed.value;
 
     const contactId = pickFirst(payload, ["contact_id", "contactId", "id"]);
-    if (!contactId) {
-      return {
-        statusCode: 400,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ok: false,
-          error: "Missing contact_id (or contactId/id) in payload",
-        }),
-      };
-    }
+    if (!contactId) return { statusCode: 400, body: JSON.stringify({ ok: false, error: "Missing contact_id" }) };
 
     const locationId = pickFirst(payload, ["location_id", "locationId"]) || defaultLocationId;
     if (!locationId) {
-      return {
-        statusCode: 400,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ok: false,
-          error: "Missing locationId. Set env GHL_LOCATION_ID or pass location_id in payload.",
-        }),
-      };
+      return { statusCode: 400, body: JSON.stringify({ ok: false, error: "Missing locationId" }) };
     }
 
-    // Resolve custom field IDs dynamically (per location)
+    // Resolve field IDs
     const cfCache = await getCustomFieldsForLocation({ apiBase, locationId, token });
     const fieldIds = resolveFieldIds(cfCache);
 
     // Deterministic values
-    const startedAtStr = toStartedAtString(payload);
+    const startedISO = toStartedAtISO(payload);
+    const startedLocal = toLocalTimeString(startedISO);
 
-    // Fail streak must be numeric, deterministic.
-    // Priority from payload:
-    // acx_console_fail_streak -> console_fail_streak -> fail_streak -> failStreak -> 0
     const failStreak = coerceInt(
-      pickFirst(payload, [
-        "acx_console_fail_streak",
-        "console_fail_streak",
-        "fail_streak",
-        "failStreak",
-        "acx_fail_streak",
-      ]),
+      pickFirst(payload, ["acx_console_fail_streak", "fail_streak", "failStreak"]),
       0
     );
 
-    // Build update payload (field_value is required by many v2 integrations)
     const customFieldsPayload = [
-      { id: fieldIds.acx_started_at_str, field_value: startedAtStr },
+      { id: fieldIds.acx_started_at_str, field_value: startedISO },
+      { id: fieldIds.acx_started_at_local, field_value: startedLocal },
       { id: fieldIds.acx_console_fail_streak, field_value: String(failStreak) },
     ];
 
-    // Write
-    await updateContactCustomFields({
-      apiBase,
-      contactId,
-      token,
-      customFieldsPayload,
-    });
+    await updateContactCustomFields({ apiBase, contactId, token, customFieldsPayload });
 
-    // Verify with a read-back (single-call proof from one curl)
     const contactAfter = await getContact({ apiBase, contactId, token });
 
     const verified = {
       acx_started_at_str: extractContactCustomFieldValue(contactAfter, fieldIds.acx_started_at_str),
+      acx_started_at_local: extractContactCustomFieldValue(contactAfter, fieldIds.acx_started_at_local),
       acx_console_fail_streak: extractContactCustomFieldValue(contactAfter, fieldIds.acx_console_fail_streak),
     };
 
@@ -369,7 +272,8 @@ exports.handler = async (event) => {
         contactId,
         resolvedFieldIds: fieldIds,
         written: {
-          acx_started_at_str: startedAtStr,
+          acx_started_at_str: startedISO,
+          acx_started_at_local: startedLocal,
           acx_console_fail_streak: failStreak,
         },
         verified,
@@ -384,8 +288,8 @@ exports.handler = async (event) => {
       body: JSON.stringify({
         ok: false,
         error: err?.message || "Unknown error",
-        code: err?.code || undefined,
-        details: err?.details || undefined,
+        code: err?.code,
+        details: err?.details,
       }),
     };
   }
