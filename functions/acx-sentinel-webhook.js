@@ -4,6 +4,7 @@
 // - Writes deterministically
 // - Verifies read-after-write
 // - Adds operator-friendly local time field: acx_started_at_local
+// - Re-opens Sentinel on NEW failure by clearing acx_sentinel_status from RESOLVED
 
 const DEFAULT_API_BASE = "https://services.leadconnectorhq.com";
 const DEFAULT_API_VERSION = "2021-07-28";
@@ -12,6 +13,7 @@ const FIELD_SPECS = [
   { key: "acx_started_at_str", aliases: ["acx_started_at_str", "acx started at str", "acx started at"] },
   { key: "acx_started_at_local", aliases: ["acx_started_at_local", "acx started at local", "detected local"] },
   { key: "acx_console_fail_streak", aliases: ["acx_console_fail_streak", "acx console fail streak", "fail streak"] },
+  { key: "acx_sentinel_status", aliases: ["acx_sentinel_status", "acx sentinel status", "sentinel status"] },
 ];
 
 const cache = { customFields: new Map() };
@@ -27,8 +29,11 @@ function normalizeKey(s) {
 }
 
 function safeJsonParse(raw) {
-  try { return { ok: true, value: JSON.parse(raw) }; }
-  catch (e) { return { ok: false, error: e }; }
+  try {
+    return { ok: true, value: JSON.parse(raw) };
+  } catch (e) {
+    return { ok: false, error: e };
+  }
 }
 
 function getEnv(name, required = false) {
@@ -102,7 +107,32 @@ function toLocalTimeString(isoString) {
   const tz = process.env.ACX_TZ || "America/Vancouver";
   const d = new Date(isoString);
   if (Number.isNaN(d.getTime())) return String(isoString);
-  return d.toLocaleString("en-CA", { timeZone: tz });
+
+  // Operator-friendly, stable formatting (includes seconds + timezone)
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+    timeZoneName: "short",
+  }).format(d);
+}
+
+function isFailureEvent(payload, failStreak) {
+  // Primary signal: streak
+  if (failStreak > 0) return true;
+
+  // Secondary signal: explicit status
+  const rawStatus = pickFirst(payload, ["acx_console_status", "console_status", "status", "health_status"]);
+  const s = normalizeKey(rawStatus);
+
+  // Treat these as "incident present"
+  const BAD = new Set(["fail", "failed", "warning", "critical", "down", "error", "unhealthy"]);
+  return BAD.has(s);
 }
 
 async function getCustomFieldsForLocation({ apiBase, locationId, token }) {
@@ -156,11 +186,17 @@ function resolveFieldIds(cfCache) {
 
     for (const c of candidates) {
       const found = cfCache.fieldsByNormalized.get(c);
-      if (found) { fieldObj = found; break; }
+      if (found) {
+        fieldObj = found;
+        break;
+      }
     }
 
     const id = fieldObj?.id || fieldObj?._id || fieldObj?.fieldId;
-    if (!id) { missing.push(spec.key); continue; }
+    if (!id) {
+      missing.push(spec.key);
+      continue;
+    }
 
     resolved[spec.key] = String(id);
   }
@@ -234,7 +270,7 @@ exports.handler = async (event) => {
       return { statusCode: 400, body: JSON.stringify({ ok: false, error: "Missing locationId" }) };
     }
 
-    // Resolve field IDs
+    // Resolve field IDs (runtime)
     const cfCache = await getCustomFieldsForLocation({ apiBase, locationId, token });
     const fieldIds = resolveFieldIds(cfCache);
 
@@ -242,16 +278,26 @@ exports.handler = async (event) => {
     const startedISO = toStartedAtISO(payload);
     const startedLocal = toLocalTimeString(startedISO);
 
-    const failStreak = coerceInt(
-      pickFirst(payload, ["acx_console_fail_streak", "fail_streak", "failStreak"]),
-      0
-    );
+    const failStreak = coerceInt(pickFirst(payload, ["acx_console_fail_streak", "fail_streak", "failStreak"]), 0);
+
+    // Empire rule:
+    // - WF4 sets acx_sentinel_status = RESOLVED at resolution time.
+    // - If a NEW failure comes in after resolution, we must "re-open" by clearing RESOLVED here,
+    //   so Stage-2 guard (status != RESOLVED) allows alerts again.
+    const failureEvent = isFailureEvent(payload, failStreak);
 
     const customFieldsPayload = [
       { id: fieldIds.acx_started_at_str, field_value: startedISO },
       { id: fieldIds.acx_started_at_local, field_value: startedLocal },
-      { id: fieldIds.acx_console_fail_streak, field_value: String(failStreak) },
+      { id: fieldIds.acx_console_fail_streak, field_value: failStreak },
     ];
+
+    // Re-open only on failure signals (do NOT touch status on OK/heartbeat)
+    let reopened = false;
+    if (failureEvent) {
+      customFieldsPayload.push({ id: fieldIds.acx_sentinel_status, field_value: "" }); // clears RESOLVED
+      reopened = true;
+    }
 
     await updateContactCustomFields({ apiBase, contactId, token, customFieldsPayload });
 
@@ -261,6 +307,7 @@ exports.handler = async (event) => {
       acx_started_at_str: extractContactCustomFieldValue(contactAfter, fieldIds.acx_started_at_str),
       acx_started_at_local: extractContactCustomFieldValue(contactAfter, fieldIds.acx_started_at_local),
       acx_console_fail_streak: extractContactCustomFieldValue(contactAfter, fieldIds.acx_console_fail_streak),
+      acx_sentinel_status: extractContactCustomFieldValue(contactAfter, fieldIds.acx_sentinel_status),
     };
 
     return {
@@ -275,8 +322,10 @@ exports.handler = async (event) => {
           acx_started_at_str: startedISO,
           acx_started_at_local: startedLocal,
           acx_console_fail_streak: failStreak,
+          acx_sentinel_status: reopened ? "" : "(unchanged)",
         },
         verified,
+        reopened,
         customFieldCatalogSize: cfCache.rawCount,
       }),
     };
