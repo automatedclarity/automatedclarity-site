@@ -5,6 +5,7 @@
 // - Verifies read-after-write
 // - Adds operator-friendly local time field: acx_started_at_local
 // - Re-opens Sentinel on NEW failure by clearing acx_sentinel_status from RESOLVED
+// - NEW: writes a Matrix-compatible event blob into ACX_BLOBS_STORE (default: acx-matrix) with key prefix "event:"
 
 import { getStore } from "@netlify/blobs";
 
@@ -110,6 +111,7 @@ function toLocalTimeString(isoString) {
   const d = new Date(isoString);
   if (Number.isNaN(d.getTime())) return String(isoString);
 
+  // Operator-friendly, stable formatting (includes seconds + timezone)
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: tz,
     year: "numeric",
@@ -124,11 +126,14 @@ function toLocalTimeString(isoString) {
 }
 
 function isFailureEvent(payload, failStreak) {
+  // Primary signal: streak
   if (failStreak > 0) return true;
 
+  // Secondary signal: explicit status
   const rawStatus = pickFirst(payload, ["acx_console_status", "console_status", "status", "health_status"]);
   const s = normalizeKey(rawStatus);
 
+  // Treat these as "incident present"
   const BAD = new Set(["fail", "failed", "warning", "critical", "down", "error", "unhealthy"]);
   return BAD.has(s);
 }
@@ -278,7 +283,10 @@ exports.handler = async (event) => {
 
     const failStreak = coerceInt(pickFirst(payload, ["acx_console_fail_streak", "fail_streak", "failStreak"]), 0);
 
-    // Re-open rule (only on failure)
+    // Empire rule:
+    // - WF4 sets acx_sentinel_status = RESOLVED at resolution time.
+    // - If a NEW failure comes in after resolution, we must "re-open" by clearing RESOLVED here,
+    //   so Stage-2 guard (status != RESOLVED) allows alerts again.
     const failureEvent = isFailureEvent(payload, failStreak);
 
     const customFieldsPayload = [
@@ -287,6 +295,7 @@ exports.handler = async (event) => {
       { id: fieldIds.acx_console_fail_streak, field_value: failStreak },
     ];
 
+    // Re-open only on failure signals (do NOT touch status on OK/heartbeat)
     let reopened = false;
     if (failureEvent) {
       customFieldsPayload.push({ id: fieldIds.acx_sentinel_status, field_value: "" }); // clears RESOLVED
@@ -304,42 +313,40 @@ exports.handler = async (event) => {
       acx_sentinel_status: extractContactCustomFieldValue(contactAfter, fieldIds.acx_sentinel_status),
     };
 
-    // ------------------------------
-    // MATRIX/SENTINEL BLOBS (SAFE)
-    // ------------------------------
-    // We keep this minimal: Sentinel produces truth signals; Matrix can render them.
-    // If blob write fails, Sentinel still returns ok=true.
-    const runId =
-      String(
+    // ------------------------------------------------------------------
+    // MATRIX EVENT WRITE (compat with acx-matrix-summary.js expectations)
+    // - store: ACX_BLOBS_STORE (default "acx-matrix")
+    // - key prefix: "event:"
+    // - schema fields: ts/account/location/uptime/conversion/response_ms/quotes_recovered/integrity/run_id
+    // ------------------------------------------------------------------
+    try {
+      const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
+      const store = getStore({ name: storeName });
+
+      const ts = new Date().toISOString();
+      const runId = String(
         pickFirst(payload, ["run_id", "runId", "acx_test_run_id", "test_run_id"]) ||
-          `run-${Date.now()}-${contactId}`
+          `sentinel-${Date.now()}-${contactId}`
       );
 
-    const matrixSnapshot = {
-      source: "sentinel",
-      location_id: String(locationId),
-      contact_id: String(contactId),
-      run_id: runId,
-      started_at: startedISO,
-      started_at_local: startedLocal,
-      fail_streak: failStreak,
-      failure_event: !!failureEvent,
-      reopened: !!reopened,
-      // If your workflow sets WARNING/CRITICAL later, this will be blank here (that’s OK)
-      ghl_sentinel_status_field: verified.acx_sentinel_status ?? null,
-      created_at: new Date().toISOString(),
-    };
+      // Sentinel-derived integrity (keeps Matrix ordering meaningful)
+      const integrity = failStreak >= 3 ? "critical" : failStreak > 0 ? "degraded" : "optimal";
 
-    try {
-      // (A) run history
-      const runs = getStore("acx-sentinel-events");
-      await runs.setJSON(runId, matrixSnapshot);
+      const eventKey = `event:${locationId}:${Date.now()}`;
 
-      // (B) latest snapshot per location
-      const latest = getStore("acx-matrix-latest");
-      await latest.setJSON(String(locationId), matrixSnapshot);
+      await store.setJSON(eventKey, {
+        ts,
+        account: String(pickFirst(payload, ["account", "account_name"]) || "ACX"),
+        location: String(locationId),
+        uptime: 0,
+        conversion: 0,
+        response_ms: 0,
+        quotes_recovered: 0,
+        integrity,
+        run_id: runId,
+      });
     } catch (e) {
-      console.error("SENTINEL_BLOBS_WRITE_FAILED", e);
+      console.error("MATRIX_EVENT_WRITE_FAILED", e);
     }
 
     return {
@@ -359,11 +366,6 @@ exports.handler = async (event) => {
         verified,
         reopened,
         customFieldCatalogSize: cfCache.rawCount,
-        blobs: {
-          run_id: runId,
-          stores_written: ["acx-sentinel-events", "acx-matrix-latest"],
-          latest_key: String(locationId),
-        },
       }),
     };
   } catch (err) {
