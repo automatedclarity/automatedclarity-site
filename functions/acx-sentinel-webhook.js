@@ -6,6 +6,8 @@
 // - Adds operator-friendly local time field: acx_started_at_local
 // - Re-opens Sentinel on NEW failure by clearing acx_sentinel_status from RESOLVED
 
+import { getStore } from "@netlify/blobs";
+
 const DEFAULT_API_BASE = "https://services.leadconnectorhq.com";
 const DEFAULT_API_VERSION = "2021-07-28";
 
@@ -108,7 +110,6 @@ function toLocalTimeString(isoString) {
   const d = new Date(isoString);
   if (Number.isNaN(d.getTime())) return String(isoString);
 
-  // Operator-friendly, stable formatting (includes seconds + timezone)
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: tz,
     year: "numeric",
@@ -123,14 +124,11 @@ function toLocalTimeString(isoString) {
 }
 
 function isFailureEvent(payload, failStreak) {
-  // Primary signal: streak
   if (failStreak > 0) return true;
 
-  // Secondary signal: explicit status
   const rawStatus = pickFirst(payload, ["acx_console_status", "console_status", "status", "health_status"]);
   const s = normalizeKey(rawStatus);
 
-  // Treat these as "incident present"
   const BAD = new Set(["fail", "failed", "warning", "critical", "down", "error", "unhealthy"]);
   return BAD.has(s);
 }
@@ -280,10 +278,7 @@ exports.handler = async (event) => {
 
     const failStreak = coerceInt(pickFirst(payload, ["acx_console_fail_streak", "fail_streak", "failStreak"]), 0);
 
-    // Empire rule:
-    // - WF4 sets acx_sentinel_status = RESOLVED at resolution time.
-    // - If a NEW failure comes in after resolution, we must "re-open" by clearing RESOLVED here,
-    //   so Stage-2 guard (status != RESOLVED) allows alerts again.
+    // Re-open rule (only on failure)
     const failureEvent = isFailureEvent(payload, failStreak);
 
     const customFieldsPayload = [
@@ -292,7 +287,6 @@ exports.handler = async (event) => {
       { id: fieldIds.acx_console_fail_streak, field_value: failStreak },
     ];
 
-    // Re-open only on failure signals (do NOT touch status on OK/heartbeat)
     let reopened = false;
     if (failureEvent) {
       customFieldsPayload.push({ id: fieldIds.acx_sentinel_status, field_value: "" }); // clears RESOLVED
@@ -309,6 +303,44 @@ exports.handler = async (event) => {
       acx_console_fail_streak: extractContactCustomFieldValue(contactAfter, fieldIds.acx_console_fail_streak),
       acx_sentinel_status: extractContactCustomFieldValue(contactAfter, fieldIds.acx_sentinel_status),
     };
+
+    // ------------------------------
+    // MATRIX/SENTINEL BLOBS (SAFE)
+    // ------------------------------
+    // We keep this minimal: Sentinel produces truth signals; Matrix can render them.
+    // If blob write fails, Sentinel still returns ok=true.
+    const runId =
+      String(
+        pickFirst(payload, ["run_id", "runId", "acx_test_run_id", "test_run_id"]) ||
+          `run-${Date.now()}-${contactId}`
+      );
+
+    const matrixSnapshot = {
+      source: "sentinel",
+      location_id: String(locationId),
+      contact_id: String(contactId),
+      run_id: runId,
+      started_at: startedISO,
+      started_at_local: startedLocal,
+      fail_streak: failStreak,
+      failure_event: !!failureEvent,
+      reopened: !!reopened,
+      // If your workflow sets WARNING/CRITICAL later, this will be blank here (that’s OK)
+      ghl_sentinel_status_field: verified.acx_sentinel_status ?? null,
+      created_at: new Date().toISOString(),
+    };
+
+    try {
+      // (A) run history
+      const runs = getStore("acx-sentinel-events");
+      await runs.setJSON(runId, matrixSnapshot);
+
+      // (B) latest snapshot per location
+      const latest = getStore("acx-matrix-latest");
+      await latest.setJSON(String(locationId), matrixSnapshot);
+    } catch (e) {
+      console.error("SENTINEL_BLOBS_WRITE_FAILED", e);
+    }
 
     return {
       statusCode: 200,
@@ -327,6 +359,11 @@ exports.handler = async (event) => {
         verified,
         reopened,
         customFieldCatalogSize: cfCache.rawCount,
+        blobs: {
+          run_id: runId,
+          stores_written: ["acx-sentinel-events", "acx-matrix-latest"],
+          latest_key: String(locationId),
+        },
       }),
     };
   } catch (err) {
