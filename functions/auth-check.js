@@ -1,6 +1,10 @@
+// functions/auth-check.js
 import { readSession } from "./_lib/session.js";
+
 export default async (req) => {
-  const sess = readSession(req);
-  if (!sess) return new Response(JSON.stringify({ ok:false }), { status:401 });
-  return new Response(JSON.stringify({ ok:true }), { status:200 });
+  const s = readSession(req);
+  return new Response(JSON.stringify({ ok: s.ok }), {
+    status: s.ok ? 200 : 401,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
 };
