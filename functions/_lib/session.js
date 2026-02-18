@@ -5,7 +5,8 @@
 // Exports:
 // - setSessionCookie(req)
 // - clearSessionCookie()
-// - requireSession(req)
+// - requireSession(req)  -> Response if unauthorized, null if ok
+// - readSession(req)     -> { ok, session?, reason? }
 
 const COOKIE_NAME = "acx_session";
 const ONE_DAY = 60 * 60 * 24;
@@ -34,7 +35,7 @@ async function hmacSHA256(secret, message) {
     Buffer.from(secret, "utf8"),
     { name: "HMAC", hash: "SHA-256" },
     false,
-    ["sign", "verify"]
+    ["sign"]
   );
   const sig = await crypto.subtle.sign("HMAC", key, Buffer.from(message, "utf8"));
   return base64urlEncode(sig);
@@ -57,8 +58,7 @@ function buildCookie(value, { maxAgeSeconds, clear = false } = {}) {
   parts.push("Path=/");
   parts.push("HttpOnly");
   parts.push("SameSite=Strict");
-  // If you are serving Matrix only on HTTPS (you are), keep Secure:
-  parts.push("Secure");
+  parts.push("Secure"); // Matrix is HTTPS only
 
   if (clear) {
     parts.push("Max-Age=0");
@@ -66,7 +66,6 @@ function buildCookie(value, { maxAgeSeconds, clear = false } = {}) {
     parts.push(`Max-Age=${Math.max(0, Math.floor(maxAgeSeconds))}`);
   }
 
-  // Avoid caching auth flows
   return parts.join("; ");
 }
 
@@ -77,7 +76,7 @@ async function makeToken(req) {
   const now = Math.floor(Date.now() / 1000);
   const exp = now + ONE_DAY;
 
-  // Light fingerprinting to reduce token reuse (safe + stable)
+  // Stable fingerprint for basic replay resistance
   const ua = (req.headers.get("user-agent") || "").slice(0, 120);
   const ip =
     (req.headers.get("x-nf-client-connection-ip") ||
@@ -116,7 +115,7 @@ async function verifyToken(req, token) {
   const now = Math.floor(Date.now() / 1000);
   if (!obj?.exp || now > obj.exp) return { ok: false, reason: "expired" };
 
-  // Optional: verify same UA/IP (prevents obvious replay)
+  // Optional replay checks
   const ua = (req.headers.get("user-agent") || "").slice(0, 120);
   const ip =
     (req.headers.get("x-nf-client-connection-ip") ||
@@ -143,20 +142,29 @@ export function clearSessionCookie() {
   return buildCookie("", { clear: true });
 }
 
-export async function requireSession(req) {
+// Returns { ok: true, session } or { ok:false, reason }
+export async function readSession(req) {
   const cookies = parseCookies(req);
   const token = cookies[COOKIE_NAME];
-  const v = await verifyToken(req, token);
+  return await verifyToken(req, token);
+}
+
+// Returns a Response when unauthorized; returns null when authorized
+export async function requireSession(req) {
+  const v = await readSession(req);
 
   if (!v.ok) {
-    // Return a Response so callers can `return requireSession(req)` if desired,
-    // or throw it and catch in handlers.
     return new Response(
       JSON.stringify({ ok: false, error: "Unauthorized", reason: v.reason }),
-      { status: 401, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } }
+      {
+        status: 401,
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store",
+        },
+      }
     );
   }
 
-  // If authorized, return null (common pattern) OR session object depending on preference
   return null;
 }
