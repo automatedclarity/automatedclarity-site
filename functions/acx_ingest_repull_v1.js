@@ -25,6 +25,29 @@ const toDateOnly = (d = new Date()) => {
   return `${yyyy}-${mm}-${dd}`;
 };
 
+// NEW: post integrity to Matrix (secret header)
+async function postMatrixIntegrity({ account, location, integrity, run_id }) {
+  try {
+    const secret = (process.env.ACX_WEBHOOK_SECRET || "").trim();
+    if (!secret) return;
+
+    const url =
+      "https://console.automatedclarity.com/.netlify/functions/acx-matrix-ingest-integrity";
+
+    await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-acx-secret": secret,
+      },
+      body: JSON.stringify({ account, location, integrity, run_id }),
+    });
+  } catch (e) {
+    // never break ingest because Matrix is down
+    console.error("MATRIX_POST_FAILED", e);
+  }
+}
+
 export default async (req) => {
   if (req.method !== "POST") return methodNotAllowed();
   if (!checkAuth(req)) return unauthorized();
@@ -60,10 +83,9 @@ export default async (req) => {
   const lastOkDate = toDateOnly(new Date());
 
   // IMPORTANT: deterministic timestamp (string) we want to see in email later
-  // Keep it ISO for storage; you can format on display.
   const startedAtStr = new Date().toISOString();
 
-  // 1) Pull location custom field definitions (this is the source of truth for IDs)
+  // 1) Pull location custom field definitions (source of truth for IDs)
   const fieldsResp = await fetch(
     `${LC_BASE}/locations/${encodeURIComponent(locationId)}/customFields`,
     {
@@ -98,7 +120,6 @@ export default async (req) => {
     fieldsJson?.fields ||
     [];
 
-  // Build map of ALL keys we can see
   const keyToId = new Map();
   const seenKeys = [];
   for (const f of defs) {
@@ -110,14 +131,12 @@ export default async (req) => {
     seenKeys.push(rawKey);
   }
 
-  // helper
   const setCF = (fieldKey, value) => {
     const id = keyToId.get(String(fieldKey).toLowerCase());
     if (!id) return null;
     return { id, value: String(value ?? "") };
   };
 
-  // keys we REQUIRE to exist for this to be considered “working”
   const REQUIRED_KEYS = [
     "acx_console_location_id",
     "acx_console_location_name",
@@ -131,8 +150,6 @@ export default async (req) => {
 
   const missing = REQUIRED_KEYS.filter((k) => !keyToId.get(k.toLowerCase()));
 
-  // If any required key is missing, STOP and show exactly what GHL/LC thinks the keys are.
-  // This eliminates guessing forever.
   if (missing.length) {
     return json(422, {
       ok: false,
@@ -181,6 +198,17 @@ export default async (req) => {
     });
   }
 
+  // 3) NEW: write a Matrix integrity event every time
+  const fs = Number(failStreak || 0);
+  const integrity = fs >= 3 ? "critical" : fs > 0 ? "degraded" : "optimal";
+
+  await postMatrixIntegrity({
+    account: String(body.account || "ACX"),
+    location: String(locationId),
+    integrity,
+    run_id: String(runId || `run_REPULL_${Date.now()}`),
+  });
+
   return json(200, {
     ok: true,
     message: "Updated contact custom fields",
@@ -189,5 +217,6 @@ export default async (req) => {
     started_at_str: startedAtStr,
     wrote_count: customField.length,
     wrote_field_ids: customField.map((x) => x.id),
+    matrix: { posted: true, integrity },
   });
 };
