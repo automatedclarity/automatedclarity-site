@@ -1,5 +1,5 @@
 // functions/acx-matrix-ingest-integrity.js
-// Secret-auth ingest for Sentinel -> Matrix (writes an event)
+// Secret-auth ingest for Sentinel -> Matrix (writes an event + updates canonical index:events)
 
 import { getStore } from "@netlify/blobs";
 
@@ -17,6 +17,25 @@ function authOk(req) {
 
 async function readBody(req) {
   try { return await req.json(); } catch { return {}; }
+}
+
+function normalizeIndex(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
+  if (typeof raw === "object") {
+    if (Array.isArray(raw.keys)) return raw.keys.map(String).filter(Boolean);
+    if (Array.isArray(raw.items)) return raw.items.map(String).filter(Boolean);
+  }
+  return [];
+}
+
+function uniqAppend(list, key, max = 5000) {
+  const out = Array.isArray(list) ? list.slice() : [];
+  const i = out.indexOf(key);
+  if (i >= 0) out.splice(i, 1);
+  out.push(key);
+  if (out.length > max) out.splice(0, out.length - max);
+  return out;
 }
 
 async function readJSON(store, key) {
@@ -37,11 +56,21 @@ async function readJSON(store, key) {
   }
 }
 
-function normalizeIndex(raw) {
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
-  if (typeof raw === "object" && Array.isArray(raw.keys)) return raw.keys.map(String).filter(Boolean);
-  return [];
+async function writeJSON(store, key, obj) {
+  if (typeof store.setJSON === "function") {
+    await store.setJSON(key, obj);
+    return;
+  }
+  if (typeof store.set === "function") {
+    await store.set(key, JSON.stringify(obj));
+    return;
+  }
+  throw new Error("Blob store missing setJSON/set");
+}
+
+function toNum(x, fallback = 0) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 export default async (req) => {
@@ -51,7 +80,6 @@ export default async (req) => {
 
     const body = await readBody(req);
 
-    // required minimal inputs
     const location = String(body.location || body.location_id || "").trim();
     const account = String(body.account || "ACX").trim();
     const integrity = String(body.integrity || "").trim().toLowerCase();
@@ -64,21 +92,15 @@ export default async (req) => {
     const ts = body.ts ? String(body.ts) : new Date().toISOString();
     const run_id = String(body.run_id || `run_SENTINEL_${integrity.toUpperCase()}_${Date.now()}`);
 
-    // optional metrics (safe defaults)
-    const uptime = Number(body.uptime ?? 0);
-    const conversion = Number(body.conversion ?? 0);
-    const response_ms = Number(body.response_ms ?? 0);
-    const quotes_recovered = Number(body.quotes_recovered ?? 0);
-
     const event = {
       ts,
       run_id,
       account,
       location,
-      uptime: Number.isFinite(uptime) ? uptime : 0,
-      conversion: Number.isFinite(conversion) ? conversion : 0,
-      response_ms: Number.isFinite(response_ms) ? response_ms : 0,
-      quotes_recovered: Number.isFinite(quotes_recovered) ? quotes_recovered : 0,
+      uptime: toNum(body.uptime, 0),
+      conversion: toNum(body.conversion, 0),
+      response_ms: toNum(body.response_ms, 0),
+      quotes_recovered: toNum(body.quotes_recovered, 0),
       integrity,
       source: "sentinel",
     };
@@ -86,27 +108,26 @@ export default async (req) => {
     const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
     const store = getStore({ name: storeName });
 
-    const key = `event:${ts}:${run_id}`;
+    // match webhook key style (location + millis) so it’s consistent
+    const key = `event:${location}:${Date.now()}`;
 
-    // write event
-    await store.set(key, JSON.stringify(event), {
-      metadata: { ts, run_id, location, integrity, source: "sentinel" },
-    });
+    // 1) write event
+    await writeJSON(store, key, event);
 
-    // update index:events
-    const idxRaw = await readJSON(store, "index:events");
-    const keys = normalizeIndex(idxRaw);
+    // 2) update canonical global index
+    const rawGlobal = await readJSON(store, "index:events");
+    const globalKeys = normalizeIndex(rawGlobal);
+    const nextGlobal = uniqAppend(globalKeys, key, 5000);
+    await writeJSON(store, "index:events", { keys: nextGlobal });
 
-    // append newest
-    keys.push(key);
+    // 3) update per-location index
+    const locIndexKey = `index:loc:${location}`;
+    const rawLoc = await readJSON(store, locIndexKey);
+    const locKeys = normalizeIndex(rawLoc);
+    const nextLoc = uniqAppend(locKeys, key, 2000);
+    await writeJSON(store, locIndexKey, { keys: nextLoc });
 
-    // keep index bounded
-    const max = 5000;
-    const trimmed = keys.length > max ? keys.slice(keys.length - max) : keys;
-
-    await store.set("index:events", JSON.stringify(trimmed));
-
-    return json({ ok:true, key, store: storeName });
+    return json({ ok:true, key, store: storeName, event });
 
   } catch (e) {
     return json({ ok:false, error:e?.message || "error" }, 500);
