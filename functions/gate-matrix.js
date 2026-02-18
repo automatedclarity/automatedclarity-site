@@ -6,12 +6,26 @@ const MATRIX_PATH = join(process.cwd(), "public", "matrix.html");
 
 export default async (req) => {
   const sess = readSession(req);
-  if (!sess) {
-    return new Response(null, { status: 302, headers: { Location: "/matrix-login" } });
+
+  if (!sess.ok) {
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: "/matrix-login",
+        "Cache-Control": "no-store",
+      },
+    });
   }
+
   try {
     const html = await readFile(MATRIX_PATH, "utf8");
-    return new Response(html, { status: 200, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
+    return new Response(html, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    });
   } catch {
     return new Response("Matrix view missing", { status: 500 });
   }
