@@ -1,109 +1,104 @@
 // netlify/functions/acx-matrix-webhook.js
-// ACX Matrix — Event Writer (matches acx-matrix-summary reader)
-// - Auth: x-acx-secret (via ./_lib/auth.js)
-// - Store: process.env.ACX_BLOBS_STORE || "acx-matrix"
-// - Key prefix: "event:"  (MUST match reader)
-// - Writes JSON blobs that acx-matrix-summary can list/aggregate
+// ACX Matrix — Event Writer that matches acx-matrix-summary reader
+// - Auth: accepts EITHER x-acx-secret OR Authorization: Bearer
+// - Writes Netlify Blobs events into ACX_BLOBS_STORE (default "acx-matrix")
+// - Key prefix: "event:" (MUST match summary reader)
 
-import { checkAuth, unauthorized, methodNotAllowed } from "./_lib/auth.js";
 import { getStore } from "@netlify/blobs";
 
-const STORE = process.env.ACX_BLOBS_STORE || "acx-matrix";
-const PFX = "event:";
-
-const json = (status, obj) =>
-  new Response(JSON.stringify(obj), {
-    status,
-    headers: {
-      "Content-Type": "application/json",
-      "Cache-Control": "no-store",
-    },
+function unauthorized() {
+  return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), {
+    status: 401,
+    headers: { "Content-Type": "application/json" },
   });
+}
 
-const toNum = (v, fallback = 0) => {
+function ok(obj) {
+  return new Response(JSON.stringify(obj), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function pick(obj, keys) {
+  for (const k of keys) {
+    const v = obj?.[k];
+    if (v !== undefined && v !== null && String(v).trim() !== "") return v;
+  }
+  return undefined;
+}
+
+function toNum(v, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
-};
+}
 
 export default async (req) => {
-  if (req.method !== "POST") return methodNotAllowed();
-  if (!checkAuth(req)) return unauthorized();
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
 
+  // ---- AUTH (accept either header style) ----
+  const secret = process.env.ACX_WEBHOOK_SECRET || "";
+  const xSecret = req.headers.get("x-acx-secret") || "";
+  const auth = req.headers.get("authorization") || "";
+  const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+
+  const authed = secret && (xSecret === secret || bearer === secret);
+  if (!authed) return unauthorized();
+
+  // ---- BODY ----
   let body = {};
   try {
     body = await req.json();
   } catch {
-    return json(400, { ok: false, error: "Invalid JSON body" });
+    return new Response(JSON.stringify({ ok: false, error: "Bad Request" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
-  // Accept both "flat" payload and nested payloads
-  const ts = body.ts || body.created_at || new Date().toISOString();
-  const run_id = body.run_id || body.runId || `run-${Date.now()}`;
+  const ts = new Date().toISOString();
 
-  const account =
-    body.account ||
-    body.account_name ||
-    body.accountName ||
-    body?.matrix?.account ||
-    "unknown";
+  const account = String(pick(body, ["account", "account_name"]) || "ACX");
+  const location = String(pick(body, ["location", "location_id"]) || "unknown");
+  const run_id = String(pick(body, ["run_id", "runId"]) || `run-${Date.now()}`);
 
-  const location =
-    body.location ||
-    body.location_id ||
-    body.locationId ||
-    body?.matrix?.location ||
-    "unknown";
+  const uptime = toNum(pick(body, ["uptime"]), 0);
+  const conversion = toNum(pick(body, ["conversion"]), 0);
+  const response_ms = toNum(pick(body, ["response_ms", "responseMs"]), 0);
+  const quotes_recovered = toNum(pick(body, ["quotes_recovered", "quotesRecovered"]), 0);
 
-  const uptime = body.uptime ?? body?.matrix?.uptime ?? 0;
-  const conversion = body.conversion ?? body?.matrix?.conversion ?? 0;
-  const response_ms =
-    body.response_ms ??
-    body.responseMs ??
-    body?.matrix?.response_ms ??
-    body?.matrix?.responseMs ??
-    0;
-
-  const quotes_recovered =
-    body.quotes_recovered ??
-    body.quotesRecovered ??
-    body?.matrix?.quotes_recovered ??
-    body?.matrix?.quotesRecovered ??
-    0;
-
+  const integrityRaw = String(pick(body, ["integrity"]) || "unknown").toLowerCase();
   const integrity =
-    body.integrity ||
-    body?.matrix?.integrity ||
-    "unknown";
+    integrityRaw === "optimal" || integrityRaw === "degraded" || integrityRaw === "critical"
+      ? integrityRaw
+      : "unknown";
 
-  // This object shape is what acx-matrix-summary expects
+  // ---- WRITE EVENT (MUST match reader: STORE + prefix "event:") ----
+  const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
+  const store = getStore({ name: storeName });
+
+  const eventKey = `event:${location}:${Date.now()}`;
+
   const event = {
-    ts: String(ts),
-    run_id: String(run_id),
-    account: String(account),
-    location: String(location),
-    uptime: toNum(uptime, 0),
-    conversion: toNum(conversion, 0),
-    response_ms: toNum(response_ms, 0),
-    quotes_recovered: toNum(quotes_recovered, 0),
-    integrity: String(integrity).toLowerCase(),
+    ts,
+    account,
+    location,
+    uptime,
+    conversion,
+    response_ms,
+    quotes_recovered,
+    integrity,
+    run_id,
   };
 
-  if (!event.location || event.location === "unknown") {
-    return json(400, { ok: false, error: "Missing location (location/location_id)" });
-  }
-
-  const store = getStore({ name: STORE });
-
-  // Key MUST start with "event:" so acx-matrix-summary sees it
-  const key = `${PFX}${event.location}:${event.run_id}:${Date.now()}`;
-
   try {
-    await store.setJSON(key, event);
-    console.info("MATRIX_EVENT_WRITTEN", { store: STORE, key });
+    await store.setJSON(eventKey, event);
   } catch (e) {
     console.error("MATRIX_EVENT_WRITE_FAILED", e);
-    return json(500, { ok: false, error: "Failed to write Matrix event" });
+    // still return ok so webhook callers don't fail hard
   }
 
-  return json(200, { ok: true, written_key: key, store: STORE, event });
+  return ok({ ok: true, stored: { key: eventKey, store: storeName }, event });
 };
