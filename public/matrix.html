@@ -4,39 +4,103 @@
 <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>ACX Matrix — Dashboard</title>
 <style>
-  body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 0; background: #0b1220; color: #e6edf6; }
-  .wrap { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
+  :root{
+    --bg:#0b1220; --panel:#0f1629; --border:#1c2640; --text:#e6edf6; --muted:#96a3b7;
+    --blue:#1b69ff; --good:#39d353; --warn:#ffb224; --bad:#ff5f56; --unk:#9fb0cc;
+  }
+  *{box-sizing:border-box}
+  body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+    margin: 0; background: radial-gradient(1200px 800px at 20% 0%, #0d1a33 0%, var(--bg) 55%);
+    color: var(--text);
+  }
+  .wrap { max-width: 1280px; margin: 24px auto; padding: 0 16px; }
   .topbar { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
-  .h1 { font-size: 34px; font-weight: 800; letter-spacing: .2px; margin: 0 0 2px 0; }
-  .muted { color: #96a3b7; }
+  .h1 { font-size: 34px; font-weight: 850; letter-spacing: .2px; margin: 0 0 2px 0; }
+  .muted { color: var(--muted); }
+  .small{font-size:12px;color:var(--muted)}
   .logout { margin-top:4px; }
-  .logout a { color:#9fb0cc; text-decoration:none; font-weight:700; padding:8px 10px; border:1px solid #1c2640; border-radius:10px; background:#0f1629; display:inline-block }
-  .logout a:hover { color:#e6edf6; border-color:#2a375b; }
+  .logout a { color:#9fb0cc; text-decoration:none; font-weight:700; padding:8px 10px; border:1px solid var(--border);
+    border-radius:10px; background:rgba(15,22,41,.8); display:inline-block }
+  .logout a:hover { color:var(--text); border-color:#2a375b; }
+
   input, button, select { font: inherit; }
-  input[type="number"] { background: #0f1629; border: 1px solid #1c2640; color:#e6edf6; border-radius: 10px; padding: 10px 12px; }
-  button { background: #1b69ff; border: none; color: white; padding: 10px 14px; border-radius: 10px; cursor: pointer; font-weight: 700; }
+  input, select{
+    background: rgba(15,22,41,.85); border: 1px solid var(--border); color:var(--text);
+    border-radius: 12px; padding: 10px 12px;
+  }
+  input[type="number"]{ width: 96px; }
+  button { background: var(--blue); border: none; color: white; padding: 10px 14px; border-radius: 12px;
+    cursor: pointer; font-weight: 800;
+  }
   button:disabled { opacity: .6; cursor: default; }
+  .btn-ghost{ background: transparent; border:1px solid var(--border); color:var(--text); }
+  .btn-ghost:hover{ border-color:#2a375b; }
+
   .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-  .cards { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; margin: 16px 0 8px; }
-  .card { background: #0f1629; border:1px solid #1c2640; border-radius: 14px; padding: 14px; }
-  .k { font-size: 12px; color: #9fb0cc; }
-  .v { font-size: 22px; font-weight: 800; margin-top: 4px; }
-  .grid { display: grid; grid-template-columns: 220px 120px 120px 120px 1fr 120px; gap: 8px; }
-  .locrow { background:#0f1629; border:1px solid #1c2640; border-radius: 12px; padding: 12px; align-items: center; }
-  .badge { padding: 4px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; display: inline-block; }
-  .b-opt { background: #0d2a13; color: #39d353; border: 1px solid #1d4e26; }
-  .b-deg { background: #2b1d0d; color: #ffb224; border: 1px solid #4e3a1d; }
-  .b-crit{ background: #2a0d0d; color: #ff5f56; border: 1px solid #4e1d1d; }
-  .b-unk { background: #1a1f2b; color: #9fb0cc; border: 1px solid #273149; }
-  table { width: 100%; border-collapse: collapse; margin-top: 18px; }
-  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #1c2640; }
-  th { color:#9fb0cc; font-weight: 600; }
-  .right { text-align: right; }
-  .spark { width: 100%; height: 42px; }
   .controls { gap: 10px; margin-top: 10px; }
-  .pill { display: inline-flex; align-items: center; gap: 8px; background:#0f1629;border:1px solid #1c2640;border-radius:999px;padding:8px 12px;}
-  .small { font-size: 12px; color:#9fb0cc; }
-  @media (max-width: 900px) { .cards { grid-template-columns: repeat(2, minmax(0,1fr)); } .grid { grid-template-columns: 1fr; } }
+  .pill { display: inline-flex; align-items: center; gap: 10px; background:rgba(15,22,41,.85);
+    border:1px solid var(--border); border-radius:999px; padding:8px 12px;
+  }
+  .pill label{font-size:12px;color:var(--muted);font-weight:700}
+  .pill .mini{padding:8px 10px;border-radius:999px;border:1px solid var(--border);background:transparent}
+  .pill .toggle{display:flex;gap:6px;align-items:center}
+  .pill .toggle input{transform: translateY(1px);}
+
+  .cards { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: 12px; margin: 16px 0 8px; }
+  .card { background: rgba(15,22,41,.85); border:1px solid var(--border); border-radius: 16px; padding: 14px; }
+  .k { font-size: 12px; color: #9fb0cc; font-weight:700; }
+  .v { font-size: 22px; font-weight: 900; margin-top: 6px; letter-spacing:.2px; }
+
+  .sectionTitle{margin:16px 0 8px;display:flex;justify-content:space-between;align-items:flex-end;gap:12px}
+  .sectionTitle h3{margin:0}
+  .divider{height:1px;background:linear-gradient(90deg, transparent, rgba(28,38,64,.9), transparent); margin: 14px 0;}
+  .hint{color:var(--muted); font-size:12px}
+
+  .locs { display: grid; gap: 10px; }
+  .locrow { background: rgba(15,22,41,.85); border:1px solid var(--border); border-radius: 16px; padding: 12px; }
+  .grid { display: grid; grid-template-columns: 240px 120px 120px 120px 120px 1fr 120px; gap: 10px; align-items: center; }
+  .locrow:hover{ border-color:#2a375b; cursor:pointer; }
+  .right { text-align: right; }
+  .badge { padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 900; display: inline-block; text-transform: capitalize; }
+  .b-opt { background: #0d2a13; color: var(--good); border: 1px solid #1d4e26; }
+  .b-deg { background: #2b1d0d; color: var(--warn); border: 1px solid #4e3a1d; }
+  .b-crit{ background: #2a0d0d; color: var(--bad); border: 1px solid #4e1d1d; }
+  .b-unk { background: #1a1f2b; color: var(--unk); border: 1px solid #273149; }
+  .b-stale{ background:#182032; color:#a8b6cf; border:1px solid #2a375b; }
+  .spark { width: 100%; height: 36px; opacity:.95; }
+  .sparks{display:grid;grid-template-columns:repeat(3, minmax(0,1fr)); gap:8px}
+  .sparkLabel{font-size:11px;color:var(--muted);font-weight:800;margin-bottom:4px}
+  .sparkBox{padding:10px;border:1px solid var(--border);border-radius:14px;background:rgba(11,18,32,.55)}
+
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; overflow:hidden; border-radius:16px; }
+  thead tr{background: rgba(15,22,41,.85);}
+  th, td { text-align: left; padding: 10px 10px; border-bottom: 1px solid var(--border); }
+  th { color:#9fb0cc; font-weight: 800; font-size:12px; letter-spacing:.3px; text-transform: uppercase; }
+  tbody tr:hover{ background: rgba(15,22,41,.65); }
+
+  .sort{cursor:pointer; user-select:none}
+  .sort span{opacity:.7;font-size:11px;margin-left:6px}
+
+  /* Drawer */
+  .drawerBack{
+    position:fixed; inset:0; background: rgba(0,0,0,.55);
+    display:none; align-items: stretch; justify-content: flex-end; z-index:50;
+  }
+  .drawer{
+    width:min(560px, 92vw); background: rgba(15,22,41,.95);
+    border-left:1px solid var(--border); padding:16px; overflow:auto;
+  }
+  .drawerTop{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+  .drawerTitle{font-weight:900;font-size:18px;margin:0}
+  .x{background:transparent;border:1px solid var(--border);color:var(--text);border-radius:12px;padding:8px 10px;font-weight:900}
+  .x:hover{border-color:#2a375b}
+  .kv{display:grid;grid-template-columns: 1fr 1fr; gap:10px; margin-top:12px}
+  .kv .card{padding:12px}
+  .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;}
+  @media (max-width: 980px) {
+    .cards { grid-template-columns: repeat(2, minmax(0,1fr)); }
+    .grid { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
@@ -51,54 +115,246 @@
 
   <div class="row controls">
     <span class="pill">
-      <span class="small">Auto-refresh</span>
-      <select id="freq">
+      <label>Auto-refresh</label>
+      <select id="freq" class="mini">
         <option value="0">Off</option><option value="5">5s</option><option value="10" selected>10s</option>
         <option value="30">30s</option><option value="60">60s</option>
       </select>
     </span>
+
     <span class="pill">
-      <span class="small">Recent rows</span>
-      <input id="lim" type="number" min="10" max="1000" value="100" style="width:90px">
+      <label>Recent rows</label>
+      <input id="lim" type="number" min="10" max="1000" value="100">
     </span>
+
+    <span class="pill" style="flex:1;min-width:260px">
+      <label>Search</label>
+      <input id="q" type="text" placeholder="account or location…" style="width:100%">
+    </span>
+
+    <span class="pill">
+      <label>Integrity</label>
+      <select id="f_int" class="mini">
+        <option value="all" selected>All</option>
+        <option value="critical">Critical</option>
+        <option value="degraded">Degraded</option>
+        <option value="optimal">Optimal</option>
+        <option value="unknown">Unknown</option>
+      </select>
+    </span>
+
+    <span class="pill">
+      <label>Stale</label>
+      <select id="staleMin" class="mini">
+        <option value="5">5m</option>
+        <option value="10" selected>10m</option>
+        <option value="30">30m</option>
+        <option value="60">60m</option>
+      </select>
+      <span class="toggle">
+        <input id="onlyStale" type="checkbox">
+        <span class="small">only stale</span>
+      </span>
+    </span>
+
     <button id="load">Load</button>
+    <button id="csv" class="btn-ghost">Export CSV</button>
     <div class="muted small" id="meta"></div>
   </div>
 
   <div class="cards">
-    <div class="card"><div class="k">Locations (by severity)</div><div class="v" id="c_locs">–</div></div>
+    <div class="card"><div class="k">Locations</div><div class="v" id="c_locs">–</div></div>
     <div class="card"><div class="k">Critical</div><div class="v" id="c_crit">–</div></div>
     <div class="card"><div class="k">Degraded</div><div class="v" id="c_deg">–</div></div>
     <div class="card"><div class="k">Optimal</div><div class="v" id="c_opt">–</div></div>
+    <div class="card"><div class="k">Stale</div><div class="v" id="c_stale">–</div></div>
   </div>
 
-  <h3 style="margin:14px 0 8px">Locations</h3>
-  <div id="locs"></div>
+  <div class="sectionTitle">
+    <h3>Locations</h3>
+    <div class="hint">Tip: click a location row for drilldown</div>
+  </div>
+  <div id="locs" class="locs"></div>
 
-  <h3 style="margin:14px 0 8px">Recent Ingests</h3>
+  <div class="divider"></div>
+
+  <div class="sectionTitle">
+    <h3>Recent Ingests</h3>
+    <div class="hint">Sorted newest → oldest</div>
+  </div>
+
   <table>
     <thead>
       <tr>
-        <th>Timestamp</th><th>Account</th><th>Location</th>
-        <th class="right">Uptime</th><th class="right">Conv</th><th class="right">Resp (ms)</th>
-        <th class="right">Quotes</th><th>Integrity</th><th>Run ID</th>
+        <th>Timestamp</th>
+        <th>Account</th>
+        <th>Location</th>
+        <th class="right sort" data-sort="uptime">Uptime <span id="s_u">↕</span></th>
+        <th class="right sort" data-sort="conversion">Conv <span id="s_c">↕</span></th>
+        <th class="right sort" data-sort="response_ms">Resp <span id="s_r">↕</span></th>
+        <th class="right sort" data-sort="quotes_recovered">Quotes <span id="s_q">↕</span></th>
+        <th class="sort" data-sort="integrity">Integrity <span id="s_i">↕</span></th>
+        <th>Run ID</th>
       </tr>
     </thead>
     <tbody id="rows"></tbody>
   </table>
 </div>
 
+<!-- Drawer -->
+<div id="drawerBack" class="drawerBack">
+  <div class="drawer">
+    <div class="drawerTop">
+      <div>
+        <div class="drawerTitle" id="d_title">Location</div>
+        <div class="small muted mono" id="d_sub">—</div>
+      </div>
+      <button class="x" id="d_close">Close</button>
+    </div>
+
+    <div class="kv">
+      <div class="card"><div class="k">Last seen</div><div class="v" id="d_seen">–</div></div>
+      <div class="card"><div class="k">Integrity</div><div class="v" id="d_int">–</div></div>
+      <div class="card"><div class="k">Uptime</div><div class="v" id="d_upt">–</div></div>
+      <div class="card"><div class="k">Conversion</div><div class="v" id="d_conv">–</div></div>
+      <div class="card"><div class="k">Response (ms)</div><div class="v" id="d_resp">–</div></div>
+      <div class="card"><div class="k">Quotes recovered</div><div class="v" id="d_qt">–</div></div>
+    </div>
+
+    <div style="margin-top:12px">
+      <div class="sparkLabel">Trends</div>
+      <div class="sparks">
+        <div class="sparkBox"><div class="sparkLabel">Uptime</div><div id="sp_u"></div></div>
+        <div class="sparkBox"><div class="sparkLabel">Conversion</div><div id="sp_c"></div></div>
+        <div class="sparkBox"><div class="sparkLabel">Response</div><div id="sp_r"></div></div>
+      </div>
+    </div>
+
+    <div style="margin-top:14px">
+      <div class="sparkLabel">Recent events (this location)</div>
+      <table>
+        <thead><tr><th>Time</th><th class="right">Upt</th><th class="right">Conv</th><th class="right">Resp</th><th class="right">Quotes</th><th>Int</th><th>Run</th></tr></thead>
+        <tbody id="d_rows"></tbody>
+      </table>
+    </div>
+
+  </div>
+</div>
+
 <script>
 const $ = (id) => document.getElementById(id);
+
 const sevClass = (s) => s==='critical'?'b-crit':(s==='degraded'?'b-deg':(s==='optimal'?'b-opt':'b-unk'));
-function sparkline(points, min, max, color="#7aa2ff") {
-  if (!points.length) return '';
-  const w=220, h=42, pad=4, span=w-(pad*2);
-  const ys = points.map(v => { const cl = (v - min) / Math.max(1e-9,(max-min)); return h - pad - (cl * (h-pad*2)); });
-  const xs = points.map((_,i)=> pad + (i/(points.length-1))*span);
-  let d = `M ${xs[0]} ${ys[0]}`; for (let i=1;i<xs.length;i++) d += ` L ${xs[i]} ${ys[i]}`;
-  return `<svg class="spark" viewBox="0 0 ${w} ${h}"><path d="${d}" fill="none" stroke="${color}" stroke-width="2"/></svg>`;
+
+function fmtAgo(iso){
+  if(!iso) return "–";
+  const t = new Date(iso).getTime();
+  if(Number.isNaN(t)) return "–";
+  const d = Date.now() - t;
+  const sec = Math.max(0, Math.round(d/1000));
+  const m = Math.round(sec/60);
+  if(m < 1) return `${sec}s ago`;
+  const h = Math.round(m/60);
+  if(h < 1) return `${m}m ago`;
+  const days = Math.round(h/24);
+  if(days < 1) return `${h}h ago`;
+  return `${days}d ago`;
 }
+
+function sparkline(points, min, max, stroke) {
+  if (!points.length) return '';
+  const w=220, h=36, pad=4, span=w-(pad*2);
+  const denom = Math.max(1e-9,(max-min));
+  const ys = points.map(v => {
+    const cl = (v - min) / denom;
+    return h - pad - (cl * (h-pad*2));
+  });
+  const xs = points.map((_,i)=> pad + (i/(Math.max(1,points.length-1)))*span);
+  let d = `M ${xs[0]} ${ys[0]}`;
+  for (let i=1;i<xs.length;i++) d += ` L ${xs[i]} ${ys[i]}`;
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}">
+    <path d="${d}" fill="none" stroke="${stroke}" stroke-width="2.25" stroke-linecap="round"/>
+  </svg>`;
+}
+
+function isStale(lastSeenISO, staleMin){
+  if(!lastSeenISO) return true;
+  const t = new Date(lastSeenISO).getTime();
+  if(Number.isNaN(t)) return true;
+  return (Date.now() - t) > (staleMin * 60 * 1000);
+}
+
+let lastData = null;
+let sortKey = null;
+let sortDir = 1; // 1 asc, -1 desc
+
+function downloadCSV(rows){
+  const cols = ["ts","account","location","uptime","conversion","response_ms","quotes_recovered","integrity","run_id"];
+  const esc = (s) => `"${String(s ?? "").replace(/"/g,'""')}"`;
+  const lines = [cols.join(",")].concat(
+    rows.map(r => cols.map(c => esc(r[c])).join(","))
+  );
+  const blob = new Blob([lines.join("\n")], {type:"text/csv;charset=utf-8"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `acx-matrix-recent-${Date.now()}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function openDrawer(loc, data){
+  const locRow = (data.locations||[]).find(x => x.location === loc);
+  const series = (data.series && data.series[loc]) ? data.series[loc] : [];
+  const recent = (data.recent||[]).filter(r => r.location === loc).slice(0, 30);
+
+  $("drawerBack").style.display = "flex";
+  $("d_title").textContent = (locRow?.account || "ACX") + " — Location";
+  $("d_sub").textContent = loc;
+
+  $("d_seen").textContent = locRow?.last_seen ? new Date(locRow.last_seen).toLocaleString() + ` • ${fmtAgo(locRow.last_seen)}` : "–";
+  $("d_int").innerHTML = `<span class="badge ${sevClass((locRow?.integrity||'unknown'))}">${(locRow?.integrity||'unknown')}</span>`;
+  $("d_upt").textContent = (locRow?.uptime ?? 0).toFixed(1);
+  $("d_conv").textContent = (locRow?.conversion ?? 0).toFixed(1);
+  $("d_resp").textContent = String(Math.round(locRow?.response_ms ?? 0));
+  $("d_qt").textContent = String(Math.round(locRow?.quotes_recovered ?? 0));
+
+  // Build sparklines for each metric
+  const upts = series.map(s=>Number(s.uptime||0));
+  const conv = series.map(s=>Number(s.conv||0));
+  const resp = series.map(s=>Number(s.resp||0));
+
+  $("sp_u").innerHTML = sparkline(upts, 0, 100, "#39d353");
+  $("sp_c").innerHTML = sparkline(conv, 0, Math.max(1, ...conv), "#7aa2ff");
+  // For response, lower is better — map to inverted scale for nicer line
+  const maxR = Math.max(1, ...resp);
+  const inv = resp.map(v => maxR - v);
+  $("sp_r").innerHTML = sparkline(inv, 0, Math.max(1, ...inv), "#ffb224");
+
+  const tbody = $("d_rows"); tbody.innerHTML = "";
+  (recent.length ? recent : series.slice(-30).map(s => ({
+    ts:s.ts, account:locRow?.account||"", location:loc,
+    uptime:s.uptime, conversion:s.conv, response_ms:s.resp, quotes_recovered:s.quotes,
+    integrity:s.integrity, run_id:""
+  }))).forEach(r => {
+    const tr = document.createElement("tr");
+    const dt = r.ts ? new Date(r.ts) : null;
+    tr.innerHTML = `
+      <td>${dt?dt.toLocaleString():""}</td>
+      <td class="right">${r.uptime!==""?Number(r.uptime).toFixed(1):""}</td>
+      <td class="right">${r.conversion!==""?Number(r.conversion).toFixed(1):""}</td>
+      <td class="right">${r.response_ms!==""?Number(r.response_ms).toFixed(0):""}</td>
+      <td class="right">${r.quotes_recovered!==""?Number(r.quotes_recovered).toFixed(0):""}</td>
+      <td><span class="badge ${sevClass((r.integrity||'unknown').toLowerCase())}">${(r.integrity||'unknown').toLowerCase()}</span></td>
+      <td class="mono">${r.run_id||""}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function closeDrawer(){ $("drawerBack").style.display = "none"; }
+
+$("d_close").addEventListener("click", closeDrawer);
+$("drawerBack").addEventListener("click", (e)=>{ if(e.target === $("drawerBack")) closeDrawer(); });
 
 async function load() {
   try {
@@ -106,60 +362,169 @@ async function load() {
     const limit = +$("lim").value || 100;
     const res = await fetch("/.netlify/functions/acx-matrix-summary?limit="+limit, { cache:"no-store", credentials:"include" });
     if (res.status === 401) { location.href = "/matrix-login"; return; }
+
     const data = await res.json();
     $("load").disabled = false;
     if (!data.ok) { $("meta").textContent = "Load failed"; return; }
 
-    const locs = data.locations || [];
+    lastData = data;
+
+    // Apply filters to locations
+    const q = ($("q").value || "").trim().toLowerCase();
+    const fInt = $("f_int").value;
+    const staleMin = Number($("staleMin").value || 10);
+    const onlyStale = $("onlyStale").checked;
+
+    let locs = (data.locations || []).slice();
+
+    // Count stale before filters (for top card)
+    const staleCount = locs.filter(l => isStale(l.last_seen, staleMin)).length;
+
+    if (q) locs = locs.filter(l => (String(l.account||"")+" "+String(l.location||"")).toLowerCase().includes(q));
+    if (fInt !== "all") locs = locs.filter(l => String(l.integrity||"unknown").toLowerCase() === fInt);
+    if (onlyStale) locs = locs.filter(l => isStale(l.last_seen, staleMin));
+
     const crit = locs.filter(l=>l.integrity==='critical').length;
     const deg  = locs.filter(l=>l.integrity==='degraded').length;
     const opt  = locs.filter(l=>l.integrity==='optimal').length;
+
     $("c_locs").textContent = String(locs.length);
     $("c_crit").textContent = String(crit);
     $("c_deg").textContent  = String(deg);
     $("c_opt").textContent  = String(opt);
-    $("meta").textContent   = `${(data.recent||[]).length} recent rows`;
+    $("c_stale").textContent = String(staleCount);
 
+    $("meta").textContent = `${(data.recent||[]).length} recent rows • ${staleMin}m stale threshold`;
+
+    // Render locations
     const holder = $("locs"); holder.innerHTML = "";
     locs.forEach(l => {
       const series = (data.series && data.series[l.location]) || [];
-      const upts  = series.map(s=>Number(s.uptime||0));
+      const upts = series.map(s=>Number(s.uptime||0));
+      const conv = series.map(s=>Number(s.conv||0));
+      const resp = series.map(s=>Number(s.resp||0));
+      const maxC = Math.max(1, ...conv);
+      const maxR = Math.max(1, ...resp);
+      const invR = resp.map(v => maxR - v);
+
+      const stale = isStale(l.last_seen, staleMin);
+
       const block = document.createElement("div");
-      block.className = "grid locrow";
+      block.className = "locrow";
       block.innerHTML = `
-        <div><div style="font-weight:800">${l.account}</div><div class="muted small">${l.location}</div></div>
-        <div><span class="k">Uptime</span><div class="v">${Number(l.uptime||0).toFixed(1)}</div></div>
-        <div><span class="k">Conv</span><div class="v">${Number(l.conversion||0).toFixed(1)}</div></div>
-        <div><span class="k">Resp</span><div class="v">${Number(l.response_ms||0).toFixed(0)}</div></div>
-        <div><div class="k">Trends</div><div>${sparkline(upts, 0, 100, "#39d353")}</div></div>
-        <div style="text-align:right"><span class="badge ${sevClass(l.integrity)}">${l.integrity}</span></div>`;
+        <div class="grid">
+          <div>
+            <div style="font-weight:900">${l.account||""}</div>
+            <div class="muted small mono">${l.location||""}</div>
+            <div class="small" style="margin-top:6px;color:${stale ? "#a8b6cf":"#96a3b7"}">
+              ${l.last_seen ? (fmtAgo(l.last_seen) + (stale ? " • stale" : "")) : "no check-in"}
+            </div>
+          </div>
+
+          <div class="right">
+            <div class="k">Uptime</div><div class="v">${Number(l.uptime||0).toFixed(1)}</div>
+          </div>
+          <div class="right">
+            <div class="k">Conv</div><div class="v">${Number(l.conversion||0).toFixed(1)}</div>
+          </div>
+          <div class="right">
+            <div class="k">Resp</div><div class="v">${Number(l.response_ms||0).toFixed(0)}</div>
+          </div>
+          <div class="right">
+            <div class="k">Quotes</div><div class="v">${Number(l.quotes_recovered||0).toFixed(0)}</div>
+          </div>
+
+          <div class="sparks">
+            <div class="sparkBox"><div class="sparkLabel">Upt</div>${sparkline(upts,0,100,"#39d353")}</div>
+            <div class="sparkBox"><div class="sparkLabel">Conv</div>${sparkline(conv,0,maxC,"#7aa2ff")}</div>
+            <div class="sparkBox"><div class="sparkLabel">Resp</div>${sparkline(invR,0,Math.max(1,...invR),"#ffb224")}</div>
+          </div>
+
+          <div class="right">
+            ${
+              stale
+                ? `<span class="badge b-stale">stale</span>`
+                : `<span class="badge ${sevClass(l.integrity)}">${l.integrity}</span>`
+            }
+          </div>
+        </div>
+      `;
+      block.addEventListener("click", ()=> openDrawer(l.location, data));
       holder.appendChild(block);
     });
 
+    // Recent table (with sort)
+    let rows = (data.recent||[]).slice();
+
+    // Sort defaults: newest -> oldest (already)
+    if (sortKey) {
+      rows.sort((a,b)=>{
+        const av = a[sortKey], bv = b[sortKey];
+        const na = Number(av), nb = Number(bv);
+        if (Number.isFinite(na) && Number.isFinite(nb)) return (na - nb) * sortDir;
+        return String(av||"").localeCompare(String(bv||"")) * sortDir;
+      });
+    }
+
+    // Apply same filters to recent table (based on search + integrity)
+    const q2 = q;
+    const f2 = fInt;
+    if (q2) rows = rows.filter(r => (String(r.account||"")+" "+String(r.location||"")).toLowerCase().includes(q2));
+    if (f2 !== "all") rows = rows.filter(r => String(r.integrity||"unknown").toLowerCase() === f2);
+
     const tbody = $("rows"); tbody.innerHTML = "";
-    (data.recent||[]).forEach(r => {
+    rows.forEach(r => {
       const tr = document.createElement("tr");
       const dt = r.ts ? new Date(r.ts) : null;
       tr.innerHTML = `
         <td>${dt?dt.toLocaleString():''}</td>
         <td>${r.account||''}</td>
-        <td>${r.location||''}</td>
+        <td class="mono">${r.location||''}</td>
         <td class="right">${r.uptime!==""?Number(r.uptime).toFixed(1):""}</td>
         <td class="right">${r.conversion!==""?Number(r.conversion).toFixed(1):""}</td>
         <td class="right">${r.response_ms!==""?Number(r.response_ms).toFixed(0):""}</td>
         <td class="right">${r.quotes_recovered!==""?Number(r.quotes_recovered).toFixed(0):""}</td>
-        <td><span class="badge ${sevClass((r.integrity||'').toLowerCase())}">${(r.integrity||'').toLowerCase()}</span></td>
-        <td>${r.run_id||''}</td>`;
+        <td><span class="badge ${sevClass((r.integrity||'unknown').toLowerCase())}">${(r.integrity||'unknown').toLowerCase()}</span></td>
+        <td class="mono">${r.run_id||''}</td>`;
       tbody.appendChild(tr);
     });
+
   } catch {
     $("load").disabled = false;
     $("meta").textContent = "Load failed";
   }
 }
+
 $("load").addEventListener("click", load);
+$("csv").addEventListener("click", ()=> {
+  const rows = (lastData && lastData.recent) ? lastData.recent : [];
+  downloadCSV(rows);
+});
+
+// Sorting for recent table
+document.querySelectorAll(".sort").forEach(el=>{
+  el.addEventListener("click", ()=>{
+    const k = el.getAttribute("data-sort");
+    if(!k) return;
+    if (sortKey === k) sortDir *= -1;
+    else { sortKey = k; sortDir = 1; }
+    load();
+  });
+});
+
+// live search triggers
+["q","f_int","onlyStale","staleMin","lim"].forEach(id=>{
+  $(id).addEventListener("change", ()=> load());
+  if(id==="q") $(id).addEventListener("input", ()=> load());
+});
+
 let timer = null;
-$("freq").addEventListener("change", () => { if (timer) clearInterval(timer); const s=+$("freq").value; if (s>0) timer=setInterval(load, s*1000); });
+$("freq").addEventListener("change", () => {
+  if (timer) clearInterval(timer);
+  const s = +$("freq").value;
+  if (s > 0) timer = setInterval(load, s * 1000);
+});
+
 document.addEventListener("DOMContentLoaded", load);
 </script>
 </body>
