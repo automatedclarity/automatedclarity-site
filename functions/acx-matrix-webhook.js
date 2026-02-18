@@ -14,9 +14,6 @@ function authOk(req) {
 }
 
 function normalizeIndex(raw) {
-  // Accept:
-  // - ["k1","k2"]
-  // - { keys: ["k1","k2"] }
   if (!raw) return [];
   if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
   if (typeof raw === "object") {
@@ -28,13 +25,44 @@ function normalizeIndex(raw) {
 
 function uniqAppend(list, key, max = 5000) {
   const out = Array.isArray(list) ? list.slice() : [];
-  // remove existing key if present
-  const idx = out.indexOf(key);
-  if (idx >= 0) out.splice(idx, 1);
+  const i = out.indexOf(key);
+  if (i >= 0) out.splice(i, 1);
   out.push(key);
-  // trim oldest
   if (out.length > max) out.splice(0, out.length - max);
   return out;
+}
+
+async function readJSON(store, key) {
+  try {
+    // Some runtimes support store.get(key, { type: "json" })
+    const v = await store.get(key, { type: "json" });
+    if (v == null) return null;
+    if (typeof v === "string") return JSON.parse(v);
+    return v;
+  } catch {
+    // Fallback: plain get + parse
+    try {
+      const s = await store.get(key);
+      if (s == null) return null;
+      if (typeof s === "string") return JSON.parse(s);
+      return s;
+    } catch {
+      return null;
+    }
+  }
+}
+
+async function writeJSON(store, key, obj) {
+  if (typeof store.setJSON === "function") {
+    await store.setJSON(key, obj);
+    return;
+  }
+  // Fallback: store.set string
+  if (typeof store.set === "function") {
+    await store.set(key, JSON.stringify(obj));
+    return;
+  }
+  throw new Error("Blob store missing setJSON/set");
 }
 
 export default async (req) => {
@@ -60,31 +88,29 @@ export default async (req) => {
       conversion: Number(body.conversion ?? 0),
       response_ms: Number(body.response_ms ?? 0),
       quotes_recovered: Number(body.quotes_recovered ?? 0),
-      integrity: String((body.integrity || "unknown")).toLowerCase(),
+      integrity: String(body.integrity || "unknown").toLowerCase(),
       run_id: String(body.run_id || `run-${Date.now()}`),
     };
 
-    if (!event.location) {
-      return json({ ok: false, error: "Missing location" }, 400);
-    }
+    if (!event.location) return json({ ok: false, error: "Missing location" }, 400);
 
     const key = `event:${event.location}:${Date.now()}`;
 
-    // 1) Write the event blob
-    await store.setJSON(key, event);
+    // 1) Write event
+    await writeJSON(store, key, event);
 
     // 2) Update global index
-    const rawGlobal = await store.getJSON("index:events").catch(() => null);
+    const rawGlobal = await readJSON(store, "index:events");
     const globalKeys = normalizeIndex(rawGlobal);
     const nextGlobal = uniqAppend(globalKeys, key, 5000);
-    await store.setJSON("index:events", { keys: nextGlobal });
+    await writeJSON(store, "index:events", { keys: nextGlobal });
 
-    // 3) Update per-location index (optional but useful)
+    // 3) Update per-location index
     const locIndexKey = `index:loc:${event.location}`;
-    const rawLoc = await store.getJSON(locIndexKey).catch(() => null);
+    const rawLoc = await readJSON(store, locIndexKey);
     const locKeys = normalizeIndex(rawLoc);
     const nextLoc = uniqAppend(locKeys, key, 2000);
-    await store.setJSON(locIndexKey, { keys: nextLoc });
+    await writeJSON(store, locIndexKey, { keys: nextLoc });
 
     return json({
       ok: true,
