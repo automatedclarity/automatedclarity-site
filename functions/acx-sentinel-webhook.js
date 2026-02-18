@@ -1,13 +1,11 @@
 // netlify/functions/acx-sentinel-webhook.js
-// ACX Sentinel — Contact Writeback (Production Safe)
+// ACX Sentinel — Contact Writeback (Production Safe) + Matrix Event Writer (CJS-safe)
 // - Resolves custom field IDs at runtime (no manual IDs)
 // - Writes deterministically
 // - Verifies read-after-write
 // - Adds operator-friendly local time field: acx_started_at_local
 // - Re-opens Sentinel on NEW failure by clearing acx_sentinel_status from RESOLVED
-// - NEW: writes a Matrix-compatible event blob into ACX_BLOBS_STORE (default: acx-matrix) with key prefix "event:"
-
-import { getStore } from "@netlify/blobs";
+// - Writes Matrix-compatible event blobs into Netlify Blobs store (ACX_BLOBS_STORE, default "acx-matrix") using key prefix "event:"
 
 const DEFAULT_API_BASE = "https://services.leadconnectorhq.com";
 const DEFAULT_API_VERSION = "2021-07-28";
@@ -111,7 +109,6 @@ function toLocalTimeString(isoString) {
   const d = new Date(isoString);
   if (Number.isNaN(d.getTime())) return String(isoString);
 
-  // Operator-friendly, stable formatting (includes seconds + timezone)
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: tz,
     year: "numeric",
@@ -126,14 +123,11 @@ function toLocalTimeString(isoString) {
 }
 
 function isFailureEvent(payload, failStreak) {
-  // Primary signal: streak
   if (failStreak > 0) return true;
 
-  // Secondary signal: explicit status
   const rawStatus = pickFirst(payload, ["acx_console_status", "console_status", "status", "health_status"]);
   const s = normalizeKey(rawStatus);
 
-  // Treat these as "incident present"
   const BAD = new Set(["fail", "failed", "warning", "critical", "down", "error", "unhealthy"]);
   return BAD.has(s);
 }
@@ -283,10 +277,7 @@ exports.handler = async (event) => {
 
     const failStreak = coerceInt(pickFirst(payload, ["acx_console_fail_streak", "fail_streak", "failStreak"]), 0);
 
-    // Empire rule:
-    // - WF4 sets acx_sentinel_status = RESOLVED at resolution time.
-    // - If a NEW failure comes in after resolution, we must "re-open" by clearing RESOLVED here,
-    //   so Stage-2 guard (status != RESOLVED) allows alerts again.
+    // Re-open only on failure signals
     const failureEvent = isFailureEvent(payload, failStreak);
 
     const customFieldsPayload = [
@@ -295,7 +286,6 @@ exports.handler = async (event) => {
       { id: fieldIds.acx_console_fail_streak, field_value: failStreak },
     ];
 
-    // Re-open only on failure signals (do NOT touch status on OK/heartbeat)
     let reopened = false;
     if (failureEvent) {
       customFieldsPayload.push({ id: fieldIds.acx_sentinel_status, field_value: "" }); // clears RESOLVED
@@ -313,13 +303,10 @@ exports.handler = async (event) => {
       acx_sentinel_status: extractContactCustomFieldValue(contactAfter, fieldIds.acx_sentinel_status),
     };
 
-    // ------------------------------------------------------------------
-    // MATRIX EVENT WRITE (compat with acx-matrix-summary.js expectations)
-    // - store: ACX_BLOBS_STORE (default "acx-matrix")
-    // - key prefix: "event:"
-    // - schema fields: ts/account/location/uptime/conversion/response_ms/quotes_recovered/integrity/run_id
-    // ------------------------------------------------------------------
+    // ---- MATRIX EVENT WRITE (CJS-safe) ----
     try {
+      const { getStore } = await import("@netlify/blobs");
+
       const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
       const store = getStore({ name: storeName });
 
@@ -329,9 +316,7 @@ exports.handler = async (event) => {
           `sentinel-${Date.now()}-${contactId}`
       );
 
-      // Sentinel-derived integrity (keeps Matrix ordering meaningful)
       const integrity = failStreak >= 3 ? "critical" : failStreak > 0 ? "degraded" : "optimal";
-
       const eventKey = `event:${locationId}:${Date.now()}`;
 
       await store.setJSON(eventKey, {
