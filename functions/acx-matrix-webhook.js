@@ -1,31 +1,24 @@
-// netlify/functions/acx-matrix-webhook.js
-// ACX Matrix — Event Writer that matches acx-matrix-summary reader
-// - Auth: accepts EITHER x-acx-secret OR Authorization: Bearer
-// - Writes Netlify Blobs events into ACX_BLOBS_STORE (default "acx-matrix")
-// - Key prefix: "event:" (MUST match summary reader)
+// functions/acx-matrix-webhook.js
+// ACX Matrix Webhook (writer)
+// - Auth via x-acx-secret (ACX_WEBHOOK_SECRET)
+// - Writes event blobs under key: event:<location>:<ms>
+// - Maintains durable indexes so summary can read WITHOUT store.list()
 
 import { getStore } from "@netlify/blobs";
 
-function unauthorized() {
-  return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), {
-    status: 401,
-    headers: { "Content-Type": "application/json" },
+const json = (obj, status = 200) =>
+  new Response(JSON.stringify(obj), {
+    status,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
-}
 
-function ok(obj) {
-  return new Response(JSON.stringify(obj), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
-}
+const bad = (msg, status = 400, extra = {}) => json({ ok: false, error: msg, ...extra }, status);
 
-function pick(obj, keys) {
-  for (const k of keys) {
-    const v = obj?.[k];
-    if (v !== undefined && v !== null && String(v).trim() !== "") return v;
-  }
-  return undefined;
+function authOk(req) {
+  const expected = (process.env.ACX_WEBHOOK_SECRET || "").trim();
+  if (!expected) return false;
+  const got = (req.headers.get("x-acx-secret") || "").trim();
+  return !!got && got === expected;
 }
 
 function toNum(v, fallback = 0) {
@@ -33,72 +26,90 @@ function toNum(v, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-export default async (req) => {
-  if (req.method !== "POST") {
-    return new Response("Method Not Allowed", { status: 405 });
-  }
+function normIntegrity(v) {
+  const s = String(v || "").toLowerCase().trim();
+  if (s === "critical" || s === "degraded" || s === "optimal") return s;
+  return "unknown";
+}
 
-  // ---- AUTH (accept either header style) ----
-  const secret = process.env.ACX_WEBHOOK_SECRET || "";
-  const xSecret = req.headers.get("x-acx-secret") || "";
-  const auth = req.headers.get("authorization") || "";
-  const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-
-  const authed = secret && (xSecret === secret || bearer === secret);
-  if (!authed) return unauthorized();
-
-  // ---- BODY ----
-  let body = {};
+async function readJson(req) {
   try {
-    body = await req.json();
+    return await req.json();
   } catch {
-    return new Response(JSON.stringify({ ok: false, error: "Bad Request" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
+    return null;
   }
+}
 
-  const ts = new Date().toISOString();
+async function getIndex(store, key) {
+  try {
+    const v = await store.getJSON(key);
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
 
-  const account = String(pick(body, ["account", "account_name"]) || "ACX");
-  const location = String(pick(body, ["location", "location_id"]) || "unknown");
-  const run_id = String(pick(body, ["run_id", "runId"]) || `run-${Date.now()}`);
+function addToFrontUnique(list, value, max = 5000) {
+  const out = [value, ...list.filter((x) => x !== value)];
+  if (out.length > max) out.length = max;
+  return out;
+}
 
-  const uptime = toNum(pick(body, ["uptime"]), 0);
-  const conversion = toNum(pick(body, ["conversion"]), 0);
-  const response_ms = toNum(pick(body, ["response_ms", "responseMs"]), 0);
-  const quotes_recovered = toNum(pick(body, ["quotes_recovered", "quotesRecovered"]), 0);
+export default async (req) => {
+  if (req.method !== "POST") return bad("Method Not Allowed", 405);
 
-  const integrityRaw = String(pick(body, ["integrity"]) || "unknown").toLowerCase();
-  const integrity =
-    integrityRaw === "optimal" || integrityRaw === "degraded" || integrityRaw === "critical"
-      ? integrityRaw
-      : "unknown";
+  if (!authOk(req)) return bad("Unauthorized", 401);
 
-  // ---- WRITE EVENT (MUST match reader: STORE + prefix "event:") ----
-  const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
-  const store = getStore({ name: storeName });
+  const body = await readJson(req);
+  if (!body || typeof body !== "object") return bad("Invalid JSON body", 400);
 
-  const eventKey = `event:${location}:${Date.now()}`;
+  const account = String(body.account || body.account_name || "ACX");
+  const location = String(body.location || body.location_id || body.locationId || "").trim();
+  const run_id = String(body.run_id || body.runId || `run-${Date.now()}`);
+
+  if (!location) return bad("Missing location", 400);
 
   const event = {
-    ts,
+    ts: new Date().toISOString(),
     account,
     location,
-    uptime,
-    conversion,
-    response_ms,
-    quotes_recovered,
-    integrity,
+    uptime: toNum(body.uptime, 0),
+    conversion: toNum(body.conversion, 0),
+    response_ms: toNum(body.response_ms, 0),
+    quotes_recovered: toNum(body.quotes_recovered, 0),
+    integrity: normIntegrity(body.integrity),
     run_id,
   };
 
-  try {
-    await store.setJSON(eventKey, event);
-  } catch (e) {
-    console.error("MATRIX_EVENT_WRITE_FAILED", e);
-    // still return ok so webhook callers don't fail hard
-  }
+  const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
+  const store = getStore({ name: storeName });
 
-  return ok({ ok: true, stored: { key: eventKey, store: storeName }, event });
+  const key = `event:${location}:${Date.now()}`;
+
+  // 1) write the event
+  await store.setJSON(key, event);
+
+  // 2) update global index + per-location index
+  const globalIndexKey = "index:events";
+  const locIndexKey = `index:loc:${location}`;
+
+  const [globalIndex, locIndex] = await Promise.all([
+    getIndex(store, globalIndexKey),
+    getIndex(store, locIndexKey),
+  ]);
+
+  const newGlobal = addToFrontUnique(globalIndex, key, 10000);
+  const newLoc = addToFrontUnique(locIndex, key, 2000);
+
+  await Promise.all([
+    store.setJSON(globalIndexKey, newGlobal),
+    store.setJSON(locIndexKey, newLoc),
+  ]);
+
+  return json({
+    ok: true,
+    stored: { key, store: storeName },
+    index: { global_count: newGlobal.length, loc_count: newLoc.length },
+    event,
+  });
 };
