@@ -1,21 +1,12 @@
 // functions/_lib/session.js
-// ACX Matrix session helpers (ESM) — cookie-based, HMAC-signed
-// Requires env var: ACX_SESSION_KEY
-//
-// Exports:
-// - setSessionCookie(req)
-// - clearSessionCookie()
-// - requireSession(req)  -> Response if unauthorized, null if ok
-// - readSession(req)     -> { ok, session?, reason? }
+// ACX Matrix session cookies (HMAC-signed, no DB)
+// Exports: setSessionCookie, clearSessionCookie, readSession, requireSession
 
-const COOKIE_NAME = "acx_session";
-const ONE_DAY = 60 * 60 * 24;
+import crypto from "crypto";
 
-function getEnv(name) {
-  return (process.env[name] || "").trim();
-}
+const COOKIE = "acx_matrix_sess";
 
-function base64urlEncode(buf) {
+function base64url(buf) {
   return Buffer.from(buf)
     .toString("base64")
     .replace(/\+/g, "-")
@@ -23,148 +14,109 @@ function base64urlEncode(buf) {
     .replace(/=+$/g, "");
 }
 
-function base64urlDecode(str) {
-  const s = String(str || "").replace(/-/g, "+").replace(/_/g, "/");
-  const pad = s.length % 4 === 0 ? "" : "=".repeat(4 - (s.length % 4));
-  return Buffer.from(s + pad, "base64");
+function unbase64url(str) {
+  str = String(str || "").replace(/-/g, "+").replace(/_/g, "/");
+  while (str.length % 4) str += "=";
+  return Buffer.from(str, "base64");
 }
 
-async function hmacSHA256(secret, message) {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    Buffer.from(secret, "utf8"),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
+function getSessionKey() {
+  const key = (process.env.ACX_SESSION_KEY || "").trim();
+  if (!key) throw new Error("Missing required env var: ACX_SESSION_KEY");
+  return key;
+}
+
+function sign(payloadJson) {
+  const key = getSessionKey();
+  const body = base64url(Buffer.from(payloadJson, "utf8"));
+  const sig = base64url(
+    crypto.createHmac("sha256", key).update(body).digest()
   );
-  const sig = await crypto.subtle.sign("HMAC", key, Buffer.from(message, "utf8"));
-  return base64urlEncode(sig);
+  return `${body}.${sig}`;
 }
 
-function parseCookies(req) {
-  const header = req.headers.get("cookie") || "";
-  const out = {};
-  header.split(";").forEach((part) => {
-    const [k, ...rest] = part.trim().split("=");
-    if (!k) return;
-    out[k] = decodeURIComponent(rest.join("=") || "");
-  });
-  return out;
-}
-
-function buildCookie(value, { maxAgeSeconds, clear = false } = {}) {
-  const parts = [];
-  parts.push(`${COOKIE_NAME}=${encodeURIComponent(value || "")}`);
-  parts.push("Path=/");
-  parts.push("HttpOnly");
-  parts.push("SameSite=Strict");
-  parts.push("Secure"); // Matrix is HTTPS only
-
-  if (clear) {
-    parts.push("Max-Age=0");
-  } else if (typeof maxAgeSeconds === "number") {
-    parts.push(`Max-Age=${Math.max(0, Math.floor(maxAgeSeconds))}`);
-  }
-
-  return parts.join("; ");
-}
-
-async function makeToken(req) {
-  const secret = getEnv("ACX_SESSION_KEY");
-  if (!secret) throw new Error("Missing env var: ACX_SESSION_KEY");
-
-  const now = Math.floor(Date.now() / 1000);
-  const exp = now + ONE_DAY;
-
-  // Stable fingerprint for basic replay resistance
-  const ua = (req.headers.get("user-agent") || "").slice(0, 120);
-  const ip =
-    (req.headers.get("x-nf-client-connection-ip") ||
-      req.headers.get("x-forwarded-for") ||
-      "")
-      .split(",")[0]
-      .trim()
-      .slice(0, 64);
-
-  const payloadObj = { v: 1, iat: now, exp, ua, ip };
-  const payload = base64urlEncode(JSON.stringify(payloadObj));
-
-  const sig = await hmacSHA256(secret, payload);
-  return `${payload}.${sig}`;
-}
-
-async function verifyToken(req, token) {
-  const secret = getEnv("ACX_SESSION_KEY");
-  if (!secret) return { ok: false, reason: "server-not-configured" };
-
+function verify(token) {
+  const key = getSessionKey();
   const parts = String(token || "").split(".");
-  if (parts.length !== 2) return { ok: false, reason: "bad-token-format" };
+  if (parts.length !== 2) return null;
 
-  const [payload, sig] = parts;
+  const [body, sig] = parts;
+  const expected = base64url(
+    crypto.createHmac("sha256", key).update(body).digest()
+  );
 
-  const expected = await hmacSHA256(secret, payload);
-  if (sig !== expected) return { ok: false, reason: "bad-signature" };
+  // constant-time compare
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return null;
+  if (!crypto.timingSafeEqual(a, b)) return null;
 
-  let obj = null;
   try {
-    obj = JSON.parse(base64urlDecode(payload).toString("utf8"));
+    const json = unbase64url(body).toString("utf8");
+    const obj = JSON.parse(json);
+    return obj && typeof obj === "object" ? obj : null;
   } catch {
-    return { ok: false, reason: "bad-payload" };
+    return null;
   }
-
-  const now = Math.floor(Date.now() / 1000);
-  if (!obj?.exp || now > obj.exp) return { ok: false, reason: "expired" };
-
-  // Optional replay checks
-  const ua = (req.headers.get("user-agent") || "").slice(0, 120);
-  const ip =
-    (req.headers.get("x-nf-client-connection-ip") ||
-      req.headers.get("x-forwarded-for") ||
-      "")
-      .split(",")[0]
-      .trim()
-      .slice(0, 64);
-
-  if ((obj.ua || "") !== ua) return { ok: false, reason: "ua-mismatch" };
-  if ((obj.ip || "") !== ip) return { ok: false, reason: "ip-mismatch" };
-
-  return { ok: true, session: obj };
 }
 
-// ---- PUBLIC EXPORTS ----
+function parseCookie(req, name) {
+  const raw = req.headers.get("cookie") || "";
+  const parts = raw.split(";").map((p) => p.trim());
+  for (const p of parts) {
+    const idx = p.indexOf("=");
+    if (idx === -1) continue;
+    const k = p.slice(0, idx).trim();
+    const v = p.slice(idx + 1).trim();
+    if (k === name) return decodeURIComponent(v);
+  }
+  return "";
+}
 
-export async function setSessionCookie(req) {
-  const token = await makeToken(req);
-  return buildCookie(token, { maxAgeSeconds: ONE_DAY });
+export function setSessionCookie(req) {
+  const now = Date.now();
+  const ttlMs = 1000 * 60 * 60 * 12; // 12h
+  const payload = {
+    iat: now,
+    exp: now + ttlMs,
+    ua: (req.headers.get("user-agent") || "").slice(0, 120),
+  };
+  const token = sign(JSON.stringify(payload));
+
+  // Secure cookie (Netlify is HTTPS)
+  return `${COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(
+    ttlMs / 1000
+  )}`;
 }
 
 export function clearSessionCookie() {
-  return buildCookie("", { clear: true });
+  return `${COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
 }
 
-// Returns { ok: true, session } or { ok:false, reason }
-export async function readSession(req) {
-  const cookies = parseCookies(req);
-  const token = cookies[COOKIE_NAME];
-  return await verifyToken(req, token);
-}
+export function readSession(req) {
+  const token = parseCookie(req, COOKIE);
+  if (!token) return { ok: false, reason: "missing" };
 
-// Returns a Response when unauthorized; returns null when authorized
-export async function requireSession(req) {
-  const v = await readSession(req);
+  const sess = verify(token);
+  if (!sess) return { ok: false, reason: "invalid" };
 
-  if (!v.ok) {
-    return new Response(
-      JSON.stringify({ ok: false, error: "Unauthorized", reason: v.reason }),
-      {
-        status: 401,
-        headers: {
-          "Content-Type": "application/json",
-          "Cache-Control": "no-store",
-        },
-      }
-    );
+  if (sess.exp && Date.now() > Number(sess.exp)) {
+    return { ok: false, reason: "expired" };
   }
 
-  return null;
+  return { ok: true, session: sess };
+}
+
+export function requireSession(req) {
+  const s = readSession(req);
+  if (!s.ok) {
+    return {
+      ok: false,
+      response: new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      }),
+    };
+  }
+  return { ok: true, session: s.session };
 }
