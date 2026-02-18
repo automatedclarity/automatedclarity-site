@@ -1,106 +1,128 @@
 // functions/acx-matrix-summary.js
-import { getStore } from "@netlify/blobs";
-import { requireSession } from "./_lib/session.js";
+// Reads from durable indexes written by acx-matrix-webhook.js
+// Auth via x-acx-secret (ACX_WEBHOOK_SECRET)
 
-const json = (status, obj) =>
+import { getStore } from "@netlify/blobs";
+
+const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
     status,
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
 
-function parseIntSafe(x, d = 0) {
-  const n = Number(x);
-  return Number.isFinite(n) ? Math.trunc(n) : d;
-}
-
-function getMsFromKey(key) {
-  // event:<locationId>:<ms>
-  const parts = String(key || "").split(":");
-  const ms = parts.length >= 3 ? parseIntSafe(parts[2], 0) : 0;
-  return ms;
-}
+const bad = (msg, status = 400, extra = {}) => json({ ok: false, error: msg, ...extra }, status);
 
 function authOk(req) {
-  const header = (req.headers.get("x-acx-secret") || "").trim();
   const expected = (process.env.ACX_WEBHOOK_SECRET || "").trim();
-  if (expected && header && header === expected) return true;
-  return false;
+  if (!expected) return false;
+  const got = (req.headers.get("x-acx-secret") || "").trim();
+  return !!got && got === expected;
+}
+
+function toInt(v, fallback = 100) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.min(2000, Math.trunc(n)));
+}
+
+function asNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+async function getIndex(store, key) {
+  try {
+    const v = await store.getJSON(key);
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+
+async function safeGetEvent(store, key) {
+  try {
+    const e = await store.getJSON(key);
+    return e && typeof e === "object" ? e : null;
+  } catch {
+    return null;
+  }
 }
 
 export default async (req) => {
-  try {
-    if (req.method !== "GET") return json(405, { ok: false, error: "Method Not Allowed" });
+  if (req.method !== "GET") return bad("Method Not Allowed", 405);
+  if (!authOk(req)) return bad("Unauthorized", 401);
 
-    // Auth: either valid session cookie OR x-acx-secret (terminal access)
-    if (!authOk(req)) {
-      const gate = requireSession(req);
-      if (!gate.ok) return gate.response;
-    }
+  const url = new URL(req.url);
+  const limit = toInt(url.searchParams.get("limit") || "100", 100);
 
-    const url = new URL(req.url);
-    const limit = Math.min(1000, Math.max(1, parseIntSafe(url.searchParams.get("limit") || "50", 50)));
+  const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
+  const store = getStore({ name: storeName });
 
-    const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
-    const store = getStore(storeName);
+  const globalIndexKey = "index:events";
+  const keys = await getIndex(store, globalIndexKey);
 
-    // Correct API: list() returns { blobs, directories } :contentReference[oaicite:2]{index=2}
-    const { blobs } = await store.list({ prefix: "event:" });
-    const keys = (blobs || []).map((b) => b.key);
-
-    // Sort newest first using the ms suffix we write in the key
-    keys.sort((a, b) => getMsFromKey(b) - getMsFromKey(a));
-
-    const take = keys.slice(0, limit);
-
-    const recent = [];
-    for (const k of take) {
-      try {
-        const ev = await store.getJSON(k);
-        if (ev) recent.push(ev);
-      } catch {
-        // ignore single bad blob
-      }
-    }
-
-    // Aggregate latest per location
-    const byLoc = new Map();
-    for (const r of recent) {
-      const loc = String(r.location || "");
-      if (!loc) continue;
-      // first encountered is newest due to sort order
-      if (!byLoc.has(loc)) byLoc.set(loc, r);
-    }
-
-    const locations = Array.from(byLoc.values()).map((r) => ({
-      location: String(r.location || ""),
-      account: String(r.account || ""),
-      last_seen: String(r.ts || ""),
-      uptime: Number(r.uptime || 0),
-      conversion: Number(r.conversion || 0),
-      response_ms: Number(r.response_ms || 0),
-      quotes_recovered: Number(r.quotes_recovered || 0),
-      integrity: String(r.integrity || "unknown").toLowerCase(),
-    }));
-
-    // Build a tiny series per location (up to 30 points from 'recent')
-    const series = {};
-    for (const r of recent.slice().reverse()) {
-      const loc = String(r.location || "");
-      if (!loc) continue;
-      series[loc] ||= [];
-      if (series[loc].length >= 30) continue;
-      series[loc].push({
-        ts: r.ts,
-        uptime: Number(r.uptime || 0),
-        conv: Number(r.conversion || 0),
-        resp: Number(r.response_ms || 0),
-        quotes: Number(r.quotes_recovered || 0),
-        integrity: String(r.integrity || "unknown").toLowerCase(),
-      });
-    }
-
-    return json(200, { ok: true, recent, locations, series });
-  } catch (e) {
-    return json(500, { ok: false, error: e?.message || "Unknown error" });
+  if (!keys.length) {
+    return json({ ok: true, recent: [], locations: [], series: {}, meta: { store: storeName, index_count: 0 } });
   }
+
+  const takeKeys = keys.slice(0, limit);
+  const events = (await Promise.all(takeKeys.map((k) => safeGetEvent(store, k)))).filter(Boolean);
+
+  // recent rows (already newest-first because index is newest-first)
+  const recent = events.map((e) => ({
+    ts: e.ts,
+    account: e.account,
+    location: e.location,
+    uptime: e.uptime,
+    conversion: e.conversion,
+    response_ms: e.response_ms,
+    quotes_recovered: e.quotes_recovered,
+    integrity: e.integrity,
+    run_id: e.run_id,
+  }));
+
+  // locations = latest-by-location snapshot
+  const latestByLoc = new Map();
+  for (const e of events) {
+    if (!e.location) continue;
+    if (!latestByLoc.has(e.location)) latestByLoc.set(e.location, e);
+  }
+
+  const locations = Array.from(latestByLoc.values()).map((e) => ({
+    location: e.location,
+    account: e.account || "",
+    last_seen: e.ts,
+    uptime: asNum(e.uptime),
+    conversion: asNum(e.conversion),
+    response_ms: asNum(e.response_ms),
+    quotes_recovered: asNum(e.quotes_recovered),
+    integrity: (e.integrity || "unknown").toLowerCase(),
+  }));
+
+  // series for dashboard sparklines (use per-location indexes)
+  const series = {};
+  await Promise.all(
+    locations.map(async (l) => {
+      const locIndexKey = `index:loc:${l.location}`;
+      const locKeys = (await getIndex(store, locIndexKey)).slice(0, 120); // 120 points max
+      const locEvents = (await Promise.all(locKeys.map((k) => safeGetEvent(store, k)))).filter(Boolean);
+
+      series[l.location] = locEvents.map((e) => ({
+        ts: e.ts,
+        uptime: asNum(e.uptime),
+        conv: asNum(e.conversion),
+        resp: asNum(e.response_ms),
+        quotes: asNum(e.quotes_recovered),
+        integrity: (e.integrity || "unknown").toLowerCase(),
+      }));
+    })
+  );
+
+  return json({
+    ok: true,
+    recent,
+    locations,
+    series,
+    meta: { store: storeName, index_count: keys.length, returned: events.length },
+  });
 };
