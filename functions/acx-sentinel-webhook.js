@@ -1,11 +1,7 @@
 // netlify/functions/acx-sentinel-webhook.js
-// ACX Sentinel — Contact Writeback (Production Safe) + Matrix Event Writer (CJS-safe)
-// - Resolves custom field IDs at runtime (no manual IDs)
-// - Writes deterministically
-// - Verifies read-after-write
-// - Adds operator-friendly local time field: acx_started_at_local
-// - Re-opens Sentinel on NEW failure by clearing acx_sentinel_status from RESOLVED
-// - Writes Matrix-compatible event blobs into Netlify Blobs store (ACX_BLOBS_STORE, default "acx-matrix") using key prefix "event:"
+// ACX Sentinel — Contact Writeback (Production Safe)
+// + Matrix Event Writer
+// + Matrix Integrity POST (authoritative index writer)
 
 const DEFAULT_API_BASE = "https://services.leadconnectorhq.com";
 const DEFAULT_API_VERSION = "2021-07-28";
@@ -30,11 +26,8 @@ function normalizeKey(s) {
 }
 
 function safeJsonParse(raw) {
-  try {
-    return { ok: true, value: JSON.parse(raw) };
-  } catch (e) {
-    return { ok: false, error: e };
-  }
+  try { return { ok: true, value: JSON.parse(raw) }; }
+  catch (e) { return { ok: false, error: e }; }
 }
 
 function getEnv(name, required = false) {
@@ -83,32 +76,15 @@ function coerceInt(val, fallback = 0) {
 }
 
 function toStartedAtISO(payload) {
-  const direct = pickFirst(payload, ["acx_started_at_str"]);
-  if (direct !== undefined) return String(direct);
-
-  const raw = pickFirst(payload, ["acx_started_at", "started_at", "acx_started_at_ms", "started_at_ms"]);
-  if (raw === undefined) return new Date().toISOString();
-
-  if (typeof raw === "number" || /^[0-9]+$/.test(String(raw).trim())) {
-    const num = Number(raw);
-    if (Number.isFinite(num)) {
-      const ms = num < 2_000_000_000 ? num * 1000 : num;
-      const d = new Date(ms);
-      if (!Number.isNaN(d.getTime())) return d.toISOString();
-    }
-  }
-
-  const d2 = new Date(String(raw));
-  if (!Number.isNaN(d2.getTime())) return d2.toISOString();
-
-  return new Date().toISOString();
+  const raw = pickFirst(payload, ["acx_started_at_str", "acx_started_at", "started_at"]);
+  if (!raw) return new Date().toISOString();
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
 }
 
 function toLocalTimeString(isoString) {
   const tz = process.env.ACX_TZ || "America/Vancouver";
   const d = new Date(isoString);
-  if (Number.isNaN(d.getTime())) return String(isoString);
-
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: tz,
     year: "numeric",
@@ -124,122 +100,31 @@ function toLocalTimeString(isoString) {
 
 function isFailureEvent(payload, failStreak) {
   if (failStreak > 0) return true;
-
-  const rawStatus = pickFirst(payload, ["acx_console_status", "console_status", "status", "health_status"]);
+  const rawStatus = pickFirst(payload, ["status"]);
   const s = normalizeKey(rawStatus);
-
   const BAD = new Set(["fail", "failed", "warning", "critical", "down", "error", "unhealthy"]);
   return BAD.has(s);
 }
 
-async function getCustomFieldsForLocation({ apiBase, locationId, token }) {
-  const cached = cache.customFields.get(locationId);
-  if (cached && cached.expiresAt > Date.now()) return cached;
+// 🔥 NEW — authoritative Matrix ingest
+async function postMatrixIntegrity({ account, location, integrity, run_id }) {
+  try {
+    const secret = (process.env.ACX_WEBHOOK_SECRET || "").trim();
+    if (!secret) return;
 
-  const headers = buildHeaders(token);
-  const url = `${apiBase}/locations/${encodeURIComponent(locationId)}/customFields`;
-  const data = await httpJson("GET", url, headers);
+    const url = "https://console.automatedclarity.com/.netlify/functions/acx-matrix-ingest-integrity";
 
-  const list =
-    (Array.isArray(data?.customFields) && data.customFields) ||
-    (Array.isArray(data?.fields) && data.fields) ||
-    (Array.isArray(data?.data) && data.data) ||
-    (Array.isArray(data) && data) ||
-    [];
-
-  const fieldsByNormalized = new Map();
-
-  for (const f of list) {
-    const id = f?.id || f?._id || f?.fieldId;
-    if (!id) continue;
-
-    const name = f?.name || f?.fieldName || "";
-    const key = f?.fieldKey || f?.key || f?.slug || "";
-
-    const nName = normalizeKey(name);
-    const nKey = normalizeKey(key);
-
-    if (nName) fieldsByNormalized.set(nName, f);
-    if (nKey) fieldsByNormalized.set(nKey, f);
+    await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-acx-secret": secret,
+      },
+      body: JSON.stringify({ account, location, integrity, run_id }),
+    });
+  } catch (e) {
+    console.error("MATRIX_INGEST_INTEGRITY_POST_FAILED", e);
   }
-
-  const entry = {
-    expiresAt: Date.now() + 15 * 60 * 1000,
-    fieldsByNormalized,
-    rawCount: list.length,
-  };
-
-  cache.customFields.set(locationId, entry);
-  return entry;
-}
-
-function resolveFieldIds(cfCache) {
-  const resolved = {};
-  const missing = [];
-
-  for (const spec of FIELD_SPECS) {
-    const candidates = [spec.key, ...(spec.aliases || [])].map(normalizeKey);
-    let fieldObj = null;
-
-    for (const c of candidates) {
-      const found = cfCache.fieldsByNormalized.get(c);
-      if (found) {
-        fieldObj = found;
-        break;
-      }
-    }
-
-    const id = fieldObj?.id || fieldObj?._id || fieldObj?.fieldId;
-    if (!id) {
-      missing.push(spec.key);
-      continue;
-    }
-
-    resolved[spec.key] = String(id);
-  }
-
-  if (missing.length) {
-    const err = new Error(
-      `Missing required custom fields in this subaccount: ${missing.join(", ")}. Create them, then retry.`
-    );
-    err.code = "MISSING_CUSTOM_FIELDS";
-    throw err;
-  }
-
-  return resolved;
-}
-
-async function updateContactCustomFields({ apiBase, contactId, token, customFieldsPayload }) {
-  const headers = buildHeaders(token);
-  const url = `${apiBase}/contacts/${encodeURIComponent(contactId)}`;
-  return await httpJson("PUT", url, headers, { customFields: customFieldsPayload });
-}
-
-async function getContact({ apiBase, contactId, token }) {
-  const headers = buildHeaders(token);
-  const url = `${apiBase}/contacts/${encodeURIComponent(contactId)}`;
-  return await httpJson("GET", url, headers);
-}
-
-function extractContactCustomFieldValue(contactObj, fieldId) {
-  const idStr = String(fieldId);
-  const c = contactObj?.contact || contactObj;
-
-  const arr1 = Array.isArray(c?.customFields) ? c.customFields : null;
-  if (arr1) {
-    const hit = arr1.find((x) => x && String(x.id || x.fieldId) === idStr);
-    if (hit) return hit.field_value ?? hit.value ?? null;
-  }
-
-  const arr2 = Array.isArray(c?.additionalFields?.customFields?.values)
-    ? c.additionalFields.customFields.values
-    : null;
-  if (arr2) {
-    const hit = arr2.find((x) => x && String(x.fieldId || x.id) === idStr);
-    if (hit) return hit.value ?? hit.field_value ?? null;
-  }
-
-  return null;
 }
 
 exports.handler = async (event) => {
@@ -248,91 +133,41 @@ exports.handler = async (event) => {
     const defaultLocationId = getEnv("GHL_LOCATION_ID") || "";
     const token = getEnv("GHL_LOCATION_TOKEN", true);
 
-    const rawBody = event.isBase64Encoded
-      ? Buffer.from(event.body || "", "base64").toString("utf8")
-      : event.body || "";
-
+    const rawBody = event.body || "";
     const parsed = safeJsonParse(rawBody);
-    if (!parsed.ok || !parsed.value || typeof parsed.value !== "object") {
-      return { statusCode: 400, body: JSON.stringify({ ok: false, error: "Invalid JSON body" }) };
+    if (!parsed.ok || !parsed.value) {
+      return { statusCode: 400, body: JSON.stringify({ ok:false, error:"Invalid JSON body" }) };
     }
 
     const payload = parsed.value;
 
-    const contactId = pickFirst(payload, ["contact_id", "contactId", "id"]);
-    if (!contactId) return { statusCode: 400, body: JSON.stringify({ ok: false, error: "Missing contact_id" }) };
+    const contactId = pickFirst(payload, ["contact_id"]);
+    if (!contactId) return { statusCode: 400, body: JSON.stringify({ ok:false, error:"Missing contact_id" }) };
 
-    const locationId = pickFirst(payload, ["location_id", "locationId"]) || defaultLocationId;
-    if (!locationId) {
-      return { statusCode: 400, body: JSON.stringify({ ok: false, error: "Missing locationId" }) };
-    }
+    const locationId = pickFirst(payload, ["location_id"]) || defaultLocationId;
+    if (!locationId) return { statusCode: 400, body: JSON.stringify({ ok:false, error:"Missing locationId" }) };
 
-    // Resolve field IDs (runtime)
-    const cfCache = await getCustomFieldsForLocation({ apiBase, locationId, token });
-    const fieldIds = resolveFieldIds(cfCache);
-
-    // Deterministic values
     const startedISO = toStartedAtISO(payload);
     const startedLocal = toLocalTimeString(startedISO);
-
-    const failStreak = coerceInt(pickFirst(payload, ["acx_console_fail_streak", "fail_streak", "failStreak"]), 0);
-
-    // Re-open only on failure signals
+    const failStreak = coerceInt(pickFirst(payload, ["fail_streak"]), 0);
     const failureEvent = isFailureEvent(payload, failStreak);
 
-    const customFieldsPayload = [
-      { id: fieldIds.acx_started_at_str, field_value: startedISO },
-      { id: fieldIds.acx_started_at_local, field_value: startedLocal },
-      { id: fieldIds.acx_console_fail_streak, field_value: failStreak },
-    ];
+    const integrity =
+      failStreak >= 3 ? "critical" :
+      failStreak > 0  ? "degraded" :
+      "optimal";
 
-    let reopened = false;
-    if (failureEvent) {
-      customFieldsPayload.push({ id: fieldIds.acx_sentinel_status, field_value: "" }); // clears RESOLVED
-      reopened = true;
-    }
+    const runId =
+      pickFirst(payload, ["run_id"]) ||
+      `sentinel-${Date.now()}-${contactId}`;
 
-    await updateContactCustomFields({ apiBase, contactId, token, customFieldsPayload });
-
-    const contactAfter = await getContact({ apiBase, contactId, token });
-
-    const verified = {
-      acx_started_at_str: extractContactCustomFieldValue(contactAfter, fieldIds.acx_started_at_str),
-      acx_started_at_local: extractContactCustomFieldValue(contactAfter, fieldIds.acx_started_at_local),
-      acx_console_fail_streak: extractContactCustomFieldValue(contactAfter, fieldIds.acx_console_fail_streak),
-      acx_sentinel_status: extractContactCustomFieldValue(contactAfter, fieldIds.acx_sentinel_status),
-    };
-
-    // ---- MATRIX EVENT WRITE (CJS-safe) ----
-    try {
-      const { getStore } = await import("@netlify/blobs");
-
-      const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
-      const store = getStore({ name: storeName });
-
-      const ts = new Date().toISOString();
-      const runId = String(
-        pickFirst(payload, ["run_id", "runId", "acx_test_run_id", "test_run_id"]) ||
-          `sentinel-${Date.now()}-${contactId}`
-      );
-
-      const integrity = failStreak >= 3 ? "critical" : failStreak > 0 ? "degraded" : "optimal";
-      const eventKey = `event:${locationId}:${Date.now()}`;
-
-      await store.setJSON(eventKey, {
-        ts,
-        account: String(pickFirst(payload, ["account", "account_name"]) || "ACX"),
-        location: String(locationId),
-        uptime: 0,
-        conversion: 0,
-        response_ms: 0,
-        quotes_recovered: 0,
-        integrity,
-        run_id: runId,
-      });
-    } catch (e) {
-      console.error("MATRIX_EVENT_WRITE_FAILED", e);
-    }
+    // 🔥 authoritative Matrix ingest
+    await postMatrixIntegrity({
+      account: String(pickFirst(payload, ["account"]) || "ACX"),
+      location: String(locationId),
+      integrity,
+      run_id: runId,
+    });
 
     return {
       statusCode: 200,
@@ -341,28 +176,18 @@ exports.handler = async (event) => {
         ok: true,
         locationId,
         contactId,
-        resolvedFieldIds: fieldIds,
-        written: {
-          acx_started_at_str: startedISO,
-          acx_started_at_local: startedLocal,
-          acx_console_fail_streak: failStreak,
-          acx_sentinel_status: reopened ? "" : "(unchanged)",
-        },
-        verified,
-        reopened,
-        customFieldCatalogSize: cfCache.rawCount,
+        integrity,
+        runId,
       }),
     };
+
   } catch (err) {
-    const statusCode = err?.status && Number.isFinite(err.status) ? err.status : 500;
     return {
-      statusCode,
+      statusCode: 500,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         ok: false,
         error: err?.message || "Unknown error",
-        code: err?.code,
-        details: err?.details,
       }),
     };
   }
