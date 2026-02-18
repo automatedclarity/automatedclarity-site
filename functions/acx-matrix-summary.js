@@ -1,17 +1,12 @@
 // functions/acx-matrix-summary.js
 import { getStore } from "@netlify/blobs";
+import { requireSession } from "./_lib/session.js";
 
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
     status,
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
-
-function authOk(req) {
-  const expected = (process.env.ACX_WEBHOOK_SECRET || "").trim();
-  const got = (req.headers.get("x-acx-secret") || "").trim();
-  return !!expected && got === expected;
-}
 
 function normalizeIndex(raw) {
   if (!raw) return [];
@@ -46,7 +41,10 @@ function toNum(x, fallback = 0) {
 export default async (req) => {
   try {
     if (req.method !== "GET") return json({ ok: false, error: "Method Not Allowed" }, 405);
-    if (!authOk(req)) return json({ ok: false, error: "Unauthorized" }, 401);
+
+    // ✅ dashboard access uses session cookie, not x-acx-secret
+    const s = requireSession(req);
+    if (!s.ok) return s.response;
 
     const url = new URL(req.url);
     const limit = Math.max(1, Math.min(500, Number(url.searchParams.get("limit") || 50)));
