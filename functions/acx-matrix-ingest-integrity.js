@@ -1,6 +1,4 @@
 // functions/acx-matrix-ingest-integrity.js
-// Secret-auth ingest for Sentinel -> Matrix (writes an event + updates canonical index:events)
-
 import { getStore } from "@netlify/blobs";
 
 const json = (obj, status = 200) =>
@@ -13,10 +11,6 @@ function authOk(req) {
   const expected = (process.env.ACX_WEBHOOK_SECRET || "").trim();
   const got = (req.headers.get("x-acx-secret") || "").trim();
   return !!expected && got === expected;
-}
-
-async function readBody(req) {
-  try { return await req.json(); } catch { return {}; }
 }
 
 function normalizeIndex(raw) {
@@ -68,6 +62,45 @@ async function writeJSON(store, key, obj) {
   throw new Error("Blob store missing setJSON/set");
 }
 
+function pick(body, keys) {
+  for (const k of keys) {
+    const v = body?.[k];
+    if (v === undefined || v === null) continue;
+    if (typeof v === "string" && v.trim() === "") continue;
+    return v;
+  }
+  return undefined;
+}
+
+function normStr(v) {
+  if (v === undefined || v === null) return "";
+  if (typeof v === "string") return v.trim().toLowerCase();
+  // if GHL sends an object/array by accident, stringify safely
+  try {
+    return JSON.stringify(v).trim().toLowerCase();
+  } catch {
+    return String(v).trim().toLowerCase();
+  }
+}
+
+function mapIntegrity(raw, failStreakNum = 0) {
+  // If fail streak provided, it wins
+  if (Number.isFinite(failStreakNum) && failStreakNum >= 3) return "critical";
+  if (Number.isFinite(failStreakNum) && failStreakNum > 0) return "degraded";
+
+  const s = normStr(raw);
+
+  const CRIT = new Set(["critical", "crit", "fail", "failed", "down", "error", "unhealthy", "red"]);
+  const DEG  = new Set(["degraded", "warn", "warning", "unstable", "yellow"]);
+  const OPT  = new Set(["optimal", "ok", "healthy", "up", "green"]);
+
+  if (CRIT.has(s)) return "critical";
+  if (DEG.has(s)) return "degraded";
+  if (OPT.has(s)) return "optimal";
+  if (s === "unknown" || s === "") return "unknown";
+  return "unknown";
+}
+
 function toNum(x, fallback = 0) {
   const n = Number(x);
   return Number.isFinite(n) ? n : fallback;
@@ -75,61 +108,71 @@ function toNum(x, fallback = 0) {
 
 export default async (req) => {
   try {
-    if (req.method !== "POST") return json({ ok:false, error:"Method Not Allowed" }, 405);
-    if (!authOk(req)) return json({ ok:false, error:"Unauthorized" }, 401);
+    if (req.method !== "POST") return json({ ok: false, error: "Method Not Allowed" }, 405);
+    if (!authOk(req)) return json({ ok: false, error: "Unauthorized" }, 401);
 
-    const body = await readBody(req);
-
-    const location = String(body.location || body.location_id || "").trim();
-    const account = String(body.account || "ACX").trim();
-    const integrity = String(body.integrity || "").trim().toLowerCase();
-
-    if (!location) return json({ ok:false, error:"Missing location" }, 400);
-    if (!["critical","degraded","optimal","unknown"].includes(integrity)) {
-      return json({ ok:false, error:"Invalid integrity" }, 400);
+    let body = {};
+    try {
+      body = await req.json();
+    } catch {
+      return json({ ok: false, error: "Bad JSON" }, 400);
     }
 
-    const ts = body.ts ? String(body.ts) : new Date().toISOString();
-    const run_id = String(body.run_id || `run_SENTINEL_${integrity.toUpperCase()}_${Date.now()}`);
+    // Support BOTH keys so GHL standard data can’t wreck us
+    const location = String(
+      pick(body, ["location", "location_id", "locationId"]) ||
+      pick(body?.contact, ["locationId"]) ||
+      ""
+    ).trim();
 
-    const event = {
-      ts,
-      run_id,
-      account,
-      location,
-      uptime: toNum(body.uptime, 0),
-      conversion: toNum(body.conversion, 0),
-      response_ms: toNum(body.response_ms, 0),
-      quotes_recovered: toNum(body.quotes_recovered, 0),
-      integrity,
-      source: "sentinel",
-    };
+    if (!location) return json({ ok: false, error: "Missing location" }, 400);
+
+    const failStreak = toNum(pick(body, ["fail_streak", "failStreak", "streak"]), NaN);
+
+    const integrityRaw = pick(body, ["acx_integrity", "integrity"]);
+    const integrity = mapIntegrity(integrityRaw, failStreak);
 
     const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
     const store = getStore({ name: storeName });
 
-    // match webhook key style (location + millis) so it’s consistent
+    const event = {
+      ts: new Date().toISOString(),
+      account: String(pick(body, ["account", "account_name"]) || "ACX"),
+      location,
+      uptime: toNum(pick(body, ["uptime"]), 0),
+      conversion: toNum(pick(body, ["conversion"]), 0),
+      response_ms: toNum(pick(body, ["response_ms"]), 0),
+      quotes_recovered: toNum(pick(body, ["quotes_recovered"]), 0),
+      integrity,
+      run_id: String(pick(body, ["run_id", "runId"]) || `run-${Date.now()}`),
+      source: "ghl",
+    };
+
     const key = `event:${location}:${Date.now()}`;
 
-    // 1) write event
+    // 1) Write event
     await writeJSON(store, key, event);
 
-    // 2) update canonical global index
+    // 2) Update global index
     const rawGlobal = await readJSON(store, "index:events");
     const globalKeys = normalizeIndex(rawGlobal);
     const nextGlobal = uniqAppend(globalKeys, key, 5000);
     await writeJSON(store, "index:events", { keys: nextGlobal });
 
-    // 3) update per-location index
+    // 3) Update per-location index
     const locIndexKey = `index:loc:${location}`;
     const rawLoc = await readJSON(store, locIndexKey);
     const locKeys = normalizeIndex(rawLoc);
     const nextLoc = uniqAppend(locKeys, key, 2000);
     await writeJSON(store, locIndexKey, { keys: nextLoc });
 
-    return json({ ok:true, key, store: storeName, event });
-
+    return json({
+      ok: true,
+      stored: { key, store: storeName },
+      index: { global_count: nextGlobal.length, loc_count: nextLoc.length },
+      event,
+    });
   } catch (e) {
-    return json({ ok:false, error:e?.message || "error" }, 500);
+    return json({ ok: false, error: e?.message || "Unknown error" }, 500);
   }
 };
