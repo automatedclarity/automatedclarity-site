@@ -1,154 +1,120 @@
-// netlify/functions/acx-matrix-summary.js
-// Reads Matrix events from Netlify Blobs store and returns:
-// - recent: latest N events
-// - locations: latest per location (summary rows)
-// - series: per-location time series for sparklines
-//
-// AUTH:
-// - Accepts x-acx-secret header (server-to-server / curl)
-// - OR valid session cookie (browser dashboard)
+// functions/acx-matrix-summary.js
+// Reads Matrix events from Netlify Blobs (store + key prefix must match writer)
+// Auth: x-acx-secret header must equal ACX_WEBHOOK_SECRET (same secret as webhook)
 
 import { getStore } from "@netlify/blobs";
-import { requireSession } from "./_lib/session.js";
 
-const json = (status, obj) =>
-  new Response(JSON.stringify(obj), {
+function json(status, obj) {
+  return new Response(JSON.stringify(obj), {
     status,
-    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+    },
   });
-
-function clampInt(n, min, max, fallback) {
-  const x = Number(n);
-  if (!Number.isFinite(x)) return fallback;
-  return Math.max(min, Math.min(max, Math.trunc(x)));
 }
 
-function okSecret(req) {
-  const expected = (process.env.ACX_WEBHOOK_SECRET || "").trim(); // same secret you used in curl
-  if (!expected) return false;
-
-  const got =
-    (req.headers.get("x-acx-secret") || "").trim() ||
-    (req.headers.get("x-acx_secret") || "").trim();
-
-  return !!got && got === expected;
+function unauthorized() {
+  return new Response("Unauthorized", {
+    status: 401,
+    headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
+  });
 }
 
-function toNum(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
+function checkSecret(req) {
+  const expected = (process.env.ACX_WEBHOOK_SECRET || "").trim();
+  if (!expected) return true; // allow if not configured (dev)
+  const got = (req.headers.get("x-acx-secret") || "").trim();
+  return got && got === expected;
+}
+
+function n(v, fallback = 0) {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : fallback;
+}
+
+function s(v) {
+  return (v ?? "").toString();
 }
 
 export default async (req) => {
   try {
-    if (req.method !== "GET") return json(405, { ok: false, error: "Method Not Allowed" });
-
-    // --- AUTH (either header secret OR session cookie) ---
-    if (!okSecret(req)) {
-      // If no secret header, require dashboard session cookie
-      // (this throws if missing/invalid)
-      requireSession(req);
-    }
+    if (!checkSecret(req)) return unauthorized();
 
     const url = new URL(req.url);
-    const limit = clampInt(url.searchParams.get("limit"), 1, 1000, 100);
+    const limit = Math.max(1, Math.min(1000, Number(url.searchParams.get("limit") || 100)));
 
-    const storeName = (process.env.ACX_BLOBS_STORE || "acx-matrix").trim();
+    const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
     const store = getStore({ name: storeName });
 
-    // We store events as keys: event:<location>:<tsMillis>
-    // We'll list and take the latest ones.
-    const listed = await store.list({ prefix: "event:" });
+    // List only keys written by webhook: event:<locationId>:<timestamp>
+    // NOTE: Netlify Blobs supports listing by prefix.
+    const keys = [];
+    for await (const k of store.list({ prefix: "event:" })) {
+      keys.push(k);
+    }
 
-    const keys = (listed?.blobs || [])
-      .map((b) => b?.key)
-      .filter(Boolean)
-      .sort((a, b) => {
-        // Sort by trailing timestamp (numerical) desc if present, else lexical desc
-        const ta = Number(String(a).split(":").pop());
-        const tb = Number(String(b).split(":").pop());
-        if (Number.isFinite(ta) && Number.isFinite(tb)) return tb - ta;
-        return b.localeCompare(a);
-      });
+    // Sort newest first based on trailing timestamp after last ":"
+    keys.sort((a, b) => {
+      const ta = Number(a.split(":").pop() || 0);
+      const tb = Number(b.split(":").pop() || 0);
+      return tb - ta;
+    });
 
-    const recentKeys = keys.slice(0, limit);
+    const take = keys.slice(0, limit);
 
     const recent = [];
-    for (const k of recentKeys) {
-      try {
-        const e = await store.getJSON(k);
-        if (e) recent.push(e);
-      } catch {
-        // ignore single bad blob
-      }
-    }
+    const locationsMap = new Map(); // locationId => last event
+    const series = {}; // locationId => [{ts, uptime, conv, resp, quotes, integrity}...]
 
-    // locations summary: take latest event per location
-    const latestByLoc = new Map();
-    for (const e of recent) {
-      const loc = String(e.location || "");
-      if (!loc) continue;
-      if (!latestByLoc.has(loc)) latestByLoc.set(loc, e);
-    }
+    for (const key of take) {
+      const ev = await store.getJSON(key).catch(() => null);
+      if (!ev || typeof ev !== "object") continue;
 
-    // BUT if limit is small, you may not see all locations.
-    // So: build latest-per-location by scanning keys until we have enough.
-    // (cap scan to keep it fast)
-    const MAX_SCAN = 3000;
-    let scanned = 0;
-    if (latestByLoc.size < 200) {
-      for (const k of keys) {
-        if (scanned++ > MAX_SCAN) break;
-        const parts = String(k).split(":");
-        const loc = parts[1] || "";
-        if (!loc) continue;
-        if (latestByLoc.has(loc)) continue;
-        try {
-          const e = await store.getJSON(k);
-          if (e) latestByLoc.set(loc, e);
-        } catch {}
-      }
-    }
+      const row = {
+        ts: s(ev.ts),
+        account: s(ev.account),
+        location: s(ev.location),
+        uptime: ev.uptime,
+        conversion: ev.conversion,
+        response_ms: ev.response_ms,
+        quotes_recovered: ev.quotes_recovered,
+        integrity: s(ev.integrity),
+        run_id: s(ev.run_id),
+      };
 
-    const locations = Array.from(latestByLoc.entries()).map(([loc, e]) => ({
-      location: String(loc),
-      account: String(e.account || ""),
-      last_seen: String(e.ts || ""),
-      uptime: toNum(e.uptime),
-      conversion: toNum(e.conversion),
-      response_ms: toNum(e.response_ms),
-      quotes_recovered: toNum(e.quotes_recovered),
-      integrity: String(e.integrity || "unknown").toLowerCase(),
-    }));
+      recent.push(row);
 
-    // series: per location list of points for sparklines
-    // We’ll build from recent + (optionally) a little extra scan for each location.
-    const series = {};
-    for (const e of recent) {
-      const loc = String(e.location || "");
-      if (!loc) continue;
+      const loc = row.location || "unknown";
       if (!series[loc]) series[loc] = [];
       series[loc].push({
-        ts: e.ts,
-        uptime: toNum(e.uptime),
-        conv: toNum(e.conversion),
-        resp: toNum(e.response_ms),
-        quotes: toNum(e.quotes_recovered),
-        integrity: String(e.integrity || "unknown").toLowerCase(),
+        ts: row.ts,
+        uptime: n(row.uptime),
+        conv: n(row.conversion),
+        resp: n(row.response_ms),
+        quotes: n(row.quotes_recovered),
+        integrity: (row.integrity || "").toLowerCase() || "unknown",
       });
+
+      // Keep "last seen" per location (newest row wins because we’re iterating newest-first)
+      if (!locationsMap.has(loc)) {
+        locationsMap.set(loc, {
+          location: loc,
+          account: row.account,
+          last_seen: row.ts,
+          uptime: n(row.uptime),
+          conversion: n(row.conversion),
+          response_ms: n(row.response_ms),
+          quotes_recovered: n(row.quotes_recovered),
+          integrity: (row.integrity || "").toLowerCase() || "unknown",
+        });
+      }
     }
 
-    // Ensure series is sorted ascending by ts for charting
-    for (const loc of Object.keys(series)) {
-      series[loc].sort((a, b) => String(a.ts).localeCompare(String(b.ts)));
-    }
+    const locations = Array.from(locationsMap.values());
 
     return json(200, { ok: true, recent, locations, series });
-  } catch (err) {
-    // If session invalid, force dashboard back to login
-    if (String(err?.message || "").toLowerCase().includes("unauthorized")) {
-      return json(401, { ok: false, error: "Unauthorized" });
-    }
-    return json(500, { ok: false, error: err?.message || "Unknown error" });
+  } catch (e) {
+    return json(500, { ok: false, error: e?.message || "Server error" });
   }
 };
