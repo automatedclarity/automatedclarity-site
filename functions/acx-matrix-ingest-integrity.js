@@ -62,48 +62,26 @@ async function writeJSON(store, key, obj) {
   throw new Error("Blob store missing setJSON/set");
 }
 
-function pick(body, keys) {
+function pickFirst(obj, keys) {
   for (const k of keys) {
-    const v = body?.[k];
-    if (v === undefined || v === null) continue;
-    if (typeof v === "string" && v.trim() === "") continue;
-    return v;
+    const v = obj?.[k];
+    if (v !== undefined && v !== null && String(v).trim() !== "") return v;
   }
   return undefined;
 }
 
-function normStr(v) {
-  if (v === undefined || v === null) return "";
-  if (typeof v === "string") return v.trim().toLowerCase();
-  // if GHL sends an object/array by accident, stringify safely
-  try {
-    return JSON.stringify(v).trim().toLowerCase();
-  } catch {
-    return String(v).trim().toLowerCase();
+// Handle GHL “standard data” where location might come as object
+function coerceLocationId(v) {
+  if (v == null) return "";
+  if (typeof v === "string") return v.trim();
+  if (typeof v === "number") return String(v);
+  if (typeof v === "object") {
+    // common shapes: {id:"..."}, {locationId:"..."}, etc.
+    const maybe =
+      v.id || v.location_id || v.locationId || v._id || v.value || "";
+    return String(maybe || "").trim();
   }
-}
-
-function mapIntegrity(raw, failStreakNum = 0) {
-  // If fail streak provided, it wins
-  if (Number.isFinite(failStreakNum) && failStreakNum >= 3) return "critical";
-  if (Number.isFinite(failStreakNum) && failStreakNum > 0) return "degraded";
-
-  const s = normStr(raw);
-
-  const CRIT = new Set(["critical", "crit", "fail", "failed", "down", "error", "unhealthy", "red"]);
-  const DEG  = new Set(["degraded", "warn", "warning", "unstable", "yellow"]);
-  const OPT  = new Set(["optimal", "ok", "healthy", "up", "green"]);
-
-  if (CRIT.has(s)) return "critical";
-  if (DEG.has(s)) return "degraded";
-  if (OPT.has(s)) return "optimal";
-  if (s === "unknown" || s === "") return "unknown";
-  return "unknown";
-}
-
-function toNum(x, fallback = 0) {
-  const n = Number(x);
-  return Number.isFinite(n) ? n : fallback;
+  return String(v).trim();
 }
 
 export default async (req) => {
@@ -118,34 +96,48 @@ export default async (req) => {
       return json({ ok: false, error: "Bad JSON" }, 400);
     }
 
-    // Support BOTH keys so GHL standard data can’t wreck us
-    const location = String(
-      pick(body, ["location", "location_id", "locationId"]) ||
-      pick(body?.contact, ["locationId"]) ||
-      ""
-    ).trim();
-
-    if (!location) return json({ ok: false, error: "Missing location" }, 400);
-
-    const failStreak = toNum(pick(body, ["fail_streak", "failStreak", "streak"]), NaN);
-
-    const integrityRaw = pick(body, ["acx_integrity", "integrity"]);
-    const integrity = mapIntegrity(integrityRaw, failStreak);
-
     const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
     const store = getStore({ name: storeName });
 
+    // ✅ Accept both keys, prefer explicit "integrity"
+    const integrityRaw = pickFirst(body, ["integrity", "acx_integrity"]);
+
+    const integrity = String(integrityRaw || "unknown").toLowerCase().trim();
+
+    // ✅ Accept location OR location_id OR locationId and handle object
+    const location = coerceLocationId(
+      pickFirst(body, ["location", "location_id", "locationId"])
+    );
+
+    const account = String(pickFirst(body, ["account", "account_name"]) || "ACX");
+    const run_id = String(pickFirst(body, ["run_id", "runId"]) || `run-${Date.now()}`);
+
+    const allowed = new Set(["critical", "degraded", "optimal", "unknown"]);
+    if (!allowed.has(integrity)) {
+      return json(
+        {
+          ok: false,
+          error: "Invalid integrity",
+          received: { integrityRaw, integrity, location: typeof body.location },
+          hint: 'Send integrity as "critical|degraded|optimal" (or use acx_integrity).',
+        },
+        400
+      );
+    }
+
+    if (!location) return json({ ok: false, error: "Missing location" }, 400);
+
     const event = {
       ts: new Date().toISOString(),
-      account: String(pick(body, ["account", "account_name"]) || "ACX"),
+      account,
       location,
-      uptime: toNum(pick(body, ["uptime"]), 0),
-      conversion: toNum(pick(body, ["conversion"]), 0),
-      response_ms: toNum(pick(body, ["response_ms"]), 0),
-      quotes_recovered: toNum(pick(body, ["quotes_recovered"]), 0),
+      uptime: Number(body.uptime ?? 0),
+      conversion: Number(body.conversion ?? 0),
+      response_ms: Number(body.response_ms ?? 0),
+      quotes_recovered: Number(body.quotes_recovered ?? 0),
       integrity,
-      run_id: String(pick(body, ["run_id", "runId"]) || `run-${Date.now()}`),
-      source: "ghl",
+      run_id,
+      source: String(pickFirst(body, ["source"]) || "sentinel"),
     };
 
     const key = `event:${location}:${Date.now()}`;
@@ -168,9 +160,10 @@ export default async (req) => {
 
     return json({
       ok: true,
-      stored: { key, store: storeName },
-      index: { global_count: nextGlobal.length, loc_count: nextLoc.length },
+      key,
+      store: storeName,
       event,
+      index: { global_count: nextGlobal.length, loc_count: nextLoc.length },
     });
   } catch (e) {
     return json({ ok: false, error: e?.message || "Unknown error" }, 500);
