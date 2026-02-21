@@ -38,6 +38,20 @@ function toNum(x, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+// Treat as "metrics/health" if it contains any non-zero numeric signal.
+// This prevents WF3 events (which often have 0s) from overwriting dashboard tiles.
+function hasMetrics(ev) {
+  const u = toNum(ev?.uptime, null);
+  const c = toNum(ev?.conversion, null);
+  const r = toNum(ev?.response_ms, null);
+  const q = toNum(ev?.quotes_recovered, null);
+  return [u, c, r, q].some((v) => v !== null && v !== 0);
+}
+
+function isWorkflowEvent(ev) {
+  return !!(ev?.event_name || ev?.stage || ev?.priority);
+}
+
 export default async (req) => {
   try {
     if (req.method !== "GET") return json({ ok: false, error: "Method Not Allowed" }, 405);
@@ -65,12 +79,25 @@ export default async (req) => {
       if (ev && typeof ev === "object") events.push(ev);
     }
 
-    // Locations summary = most recent per location
+    // Locations summary:
+    // - Use the most recent METRICS event per location for tiles.
+    // - Keep recent feed as-is (includes workflow events).
     const byLoc = new Map();
     for (const ev of events) {
       const loc = String(ev.location || "");
       if (!loc) continue;
-      if (!byLoc.has(loc)) byLoc.set(loc, ev); // events already newest-first
+
+      if (!byLoc.has(loc)) {
+        byLoc.set(loc, ev); // events are newest-first
+        continue;
+      }
+
+      const cur = byLoc.get(loc);
+      const curIsMetrics = hasMetrics(cur) && !isWorkflowEvent(cur);
+      const evIsMetrics = hasMetrics(ev) && !isWorkflowEvent(ev);
+
+      // Upgrade selection if this event is a metrics event and current isn't.
+      if (!curIsMetrics && evIsMetrics) byLoc.set(loc, ev);
     }
 
     const locations = Array.from(byLoc.values()).map((ev) => ({
@@ -84,11 +111,14 @@ export default async (req) => {
       integrity: String(ev.integrity || "unknown").toLowerCase(),
     }));
 
-    // Series (simple) = per-location last N points from this response window
+    // Series (charts): metrics events only (so workflow events don't flatten charts to zeros)
     const series = {};
     for (const ev of events.slice().reverse()) {
       const loc = String(ev.location || "");
       if (!loc) continue;
+
+      if (!hasMetrics(ev) || isWorkflowEvent(ev)) continue;
+
       if (!series[loc]) series[loc] = [];
       series[loc].push({
         ts: ev.ts,
@@ -102,9 +132,9 @@ export default async (req) => {
 
     return json({
       ok: true,
-      recent: events,
-      locations,
-      series,
+      recent: events, // includes everything (metrics + workflow)
+      locations,      // prefers latest metrics per location
+      series,         // metrics-only charts
       meta: { store: storeName, index_count },
     });
   } catch (e) {
