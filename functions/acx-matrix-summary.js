@@ -49,7 +49,7 @@ function hasMetrics(ev) {
   return [u, c, r, q].some((v) => v !== null && v !== 0);
 }
 
-// ✅ UPDATED: include Phase 2 telemetry keys so WF3/handled don't overwrite tiles
+// ✅ includes Phase 2 telemetry keys so WF3/handled don't overwrite tiles
 function isWorkflowEvent(ev) {
   return !!(
     ev?.event_name ||
@@ -118,37 +118,45 @@ export default async (req) => {
       if (ev && typeof ev === "object") events.push(ev);
     }
 
-    // Locations summary:
-    // - Use the most recent METRICS event per location for tiles.
-    // - Keep recent feed as-is (includes workflow events).
-    const byLoc = new Map();
+    // ✅ Locations summary (additive):
+    // - last_seen + integrity come from the newest event of ANY type
+    // - metrics fields come from the newest METRICS event (so workflow events can't zero tiles)
+    const locState = new Map();
+
     for (const ev of events) {
       const loc = String(ev.location || "");
       if (!loc) continue;
 
-      if (!byLoc.has(loc)) {
-        byLoc.set(loc, ev); // events are newest-first
-        continue;
+      if (!locState.has(loc)) {
+        locState.set(loc, {
+          latestAny: ev,       // events are newest-first, so first is latest
+          latestMetrics: null, // fill once with newest metrics event
+        });
       }
 
-      const cur = byLoc.get(loc);
-      const curIsMetrics = hasMetrics(cur) && !isWorkflowEvent(cur);
-      const evIsMetrics = hasMetrics(ev) && !isWorkflowEvent(ev);
+      const st = locState.get(loc);
 
-      // Upgrade selection if this event is a metrics event and current isn't.
-      if (!curIsMetrics && evIsMetrics) byLoc.set(loc, ev);
+      // capture newest metrics event (first one we see that qualifies)
+      if (!st.latestMetrics && hasMetrics(ev) && !isWorkflowEvent(ev)) {
+        st.latestMetrics = ev;
+      }
     }
 
-    const locations = Array.from(byLoc.values()).map((ev) => ({
-      location: String(ev.location || ""),
-      account: String(ev.account || ""),
-      last_seen: String(ev.ts || ""),
-      uptime: toNum(ev.uptime),
-      conversion: toNum(ev.conversion),
-      response_ms: toNum(ev.response_ms),
-      quotes_recovered: toNum(ev.quotes_recovered),
-      integrity: getIntegrity(ev),
-    }));
+    const locations = Array.from(locState.entries()).map(([loc, st]) => {
+      const any = st.latestAny;
+      const met = st.latestMetrics;
+
+      return {
+        location: String(loc),
+        account: String((met?.account || any?.account || "") || ""),
+        last_seen: String(any?.ts || ""),
+        uptime: toNum(met?.uptime),
+        conversion: toNum(met?.conversion),
+        response_ms: toNum(met?.response_ms),
+        quotes_recovered: toNum(met?.quotes_recovered),
+        integrity: getIntegrity(any), // newest integrity signal (any event)
+      };
+    });
 
     // Series (charts): metrics events only (so workflow events don't flatten charts to zeros)
     const series = {};
@@ -259,7 +267,7 @@ export default async (req) => {
     return json({
       ok: true,
       recent: events, // includes everything (metrics + workflow)
-      locations,      // prefers latest metrics per location
+      locations,      // last_seen+integrity from newest-any, metrics from newest-metrics
       series,         // metrics-only charts
       meta: {
         store: storeName,
@@ -272,7 +280,7 @@ export default async (req) => {
           },
           stalled_contacts: stalledContacts,
           recovered_contacts: recoveredContacts,
-          recovery_rate: recoveryRate, // 0..1
+          recovery_rate: recoveryRate,
           avg_response_ms: avgResponseMs,
           avg_response_seconds: avgResponseMs != null ? Math.round(avgResponseMs / 1000) : null,
         },
