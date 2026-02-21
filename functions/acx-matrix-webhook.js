@@ -1,46 +1,94 @@
 // functions/acx-matrix-webhook.js
 import { getStore } from "@netlify/blobs";
+import { checkAuth, unauthorized, methodNotAllowed } from "./_lib/auth.js";
 
-const json = (obj, status = 200) =>
+const json = (status, obj) =>
   new Response(JSON.stringify(obj), {
     status,
-    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    headers: { "Content-Type": "application/json" },
   });
 
-function authOk(req) {
-  const expected = (process.env.ACX_WEBHOOK_SECRET || "").trim();
-  const got = (req.headers.get("x-acx-secret") || "").trim();
-  return !!expected && got === expected;
-}
-
-function normalizeIndex(raw) {
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
-  if (typeof raw === "object") {
-    if (Array.isArray(raw.keys)) return raw.keys.map(String).filter(Boolean);
-    if (Array.isArray(raw.items)) return raw.items.map(String).filter(Boolean);
+function safeString(x) {
+  if (x == null) return "";
+  if (typeof x === "string") return x;
+  try {
+    return String(x);
+  } catch {
+    return "";
   }
-  return [];
 }
 
-function uniqAppend(list, key, max = 5000) {
-  const out = Array.isArray(list) ? list.slice() : [];
-  const i = out.indexOf(key);
-  if (i >= 0) out.splice(i, 1);
-  out.push(key);
-  if (out.length > max) out.splice(0, out.length - max);
-  return out;
+function toNum(x, fallback = 0) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeLocation(body) {
+  // Accept:
+  // - location: "id"
+  // - location: { id: "id" }
+  // - locationId
+  // - location_id
+  const loc =
+    body?.location_id ||
+    body?.locationId ||
+    body?.location ||
+    body?.data?.location_id ||
+    body?.data?.locationId ||
+    body?.data?.location;
+
+  if (typeof loc === "string") return loc;
+  if (loc && typeof loc === "object" && typeof loc.id === "string") return loc.id;
+  return "";
+}
+
+function normalizeIntegrity(body) {
+  // Additive: supports both acx_integrity + integrity
+  const raw =
+    body?.acx_integrity ||
+    body?.integrity ||
+    body?.data?.acx_integrity ||
+    body?.data?.integrity ||
+    "unknown";
+  const v = safeString(raw).trim().toLowerCase();
+  return v || "unknown";
+}
+
+function getContactId(body) {
+  return (
+    body?.contact_id ||
+    body?.contactId ||
+    body?.contact?.id ||
+    body?.data?.contact_id ||
+    body?.data?.contactId ||
+    body?.data?.contact?.id ||
+    ""
+  );
+}
+
+function getOpportunityId(body) {
+  return (
+    body?.opportunity_id ||
+    body?.opportunityId ||
+    body?.opportunity?.id ||
+    body?.data?.opportunity_id ||
+    body?.data?.opportunityId ||
+    body?.data?.opportunity?.id ||
+    ""
+  );
+}
+
+function randomId() {
+  return Math.random().toString(36).slice(2, 10);
 }
 
 async function readJSON(store, key) {
   try {
-    // Some runtimes support store.get(key, { type: "json" })
     const v = await store.get(key, { type: "json" });
     if (v == null) return null;
     if (typeof v === "string") return JSON.parse(v);
     return v;
   } catch {
-    // Fallback: plain get + parse
     try {
       const s = await store.get(key);
       if (s == null) return null;
@@ -52,109 +100,117 @@ async function readJSON(store, key) {
   }
 }
 
-async function writeJSON(store, key, obj) {
-  if (typeof store.setJSON === "function") {
-    await store.setJSON(key, obj);
-    return;
-  }
-  // Fallback: store.set string
-  if (typeof store.set === "function") {
-    await store.set(key, JSON.stringify(obj));
-    return;
-  }
-  throw new Error("Blob store missing setJSON/set");
+function normalizeIndex(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
+  if (typeof raw === "object" && Array.isArray(raw.keys)) return raw.keys.map(String).filter(Boolean);
+  return [];
 }
 
 export default async (req) => {
   try {
-    if (req.method !== "POST") return json({ ok: false, error: "Method Not Allowed" }, 405);
-    if (!authOk(req)) return json({ ok: false, error: "Unauthorized" }, 401);
+    if (req.method !== "POST") return methodNotAllowed();
+    if (!checkAuth(req)) return unauthorized();
 
     let body = {};
     try {
       body = await req.json();
     } catch {
-      return json({ ok: false, error: "Bad JSON" }, 400);
+      body = {};
     }
 
+    const ts = new Date().toISOString();
+
+    // ---- REQUIRED / CORE ----
+    const account = safeString(body.account || body.data?.account || "ACX");
+    const location = normalizeLocation(body);
+
+    // run_id: preserve whatever you already send; generate if missing
+    const run_id = safeString(body.run_id || body.runId || body.data?.run_id || body.data?.runId || `run-${Date.now()}`);
+
+    // ---- METRICS (existing model) ----
+    const uptime = toNum(body.uptime ?? body.data?.uptime ?? 0);
+    const conversion = toNum(body.conversion ?? body.data?.conversion ?? 0);
+    const response_ms = toNum(body.response_ms ?? body.responseMs ?? body.data?.response_ms ?? body.data?.responseMs ?? 0);
+    const quotes_recovered = toNum(body.quotes_recovered ?? body.quotesRecovered ?? body.data?.quotes_recovered ?? body.data?.quotesRecovered ?? 0);
+
+    // ---- INTEGRITY (additive support) ----
+    const integrity = normalizeIntegrity(body);
+
+    // ---- LEGACY WORKFLOW KEYS (preserve) ----
+    const event_name = safeString(body.event_name || body.eventName || body.data?.event_name || body.data?.eventName || "");
+    const stage = safeString(body.stage || body.data?.stage || "");
+    const priority = safeString(body.priority || body.data?.priority || "");
+    const event_at = safeString(body.event_at || body.eventAt || body.data?.event_at || body.data?.eventAt || "");
+
+    // ---- PHASE 2 KEYS (additive) ----
+    const acx_event = safeString(body.acx_event || body.data?.acx_event || "");
+    const acx_stage = safeString(body.acx_stage || body.data?.acx_stage || "");
+    const acx_status = safeString(body.acx_status || body.data?.acx_status || "");
+
+    const contact_id = safeString(getContactId(body));
+    const opportunity_id = safeString(getOpportunityId(body));
+
+    // Optional: preserve caller-provided source if present; fallback to "ghl"
+    const source = safeString(body.source || body.data?.source || "ghl");
+
+    // ---- BUILD EVENT OBJECT (additive, no breaking changes) ----
+    const ev = {
+      ts,
+      account,
+      location, // normalized (prevents "[object Object]")
+      uptime,
+      conversion,
+      response_ms,
+      quotes_recovered,
+
+      // keep legacy key for current UI + summary
+      integrity,
+
+      // additive new key (Phase 2)
+      acx_integrity: integrity,
+
+      run_id,
+      source,
+
+      // legacy workflow keys (keep)
+      event_name,
+      stage,
+      priority,
+      event_at,
+
+      // Phase 2 workflow keys (new)
+      acx_event,
+      acx_stage,
+      acx_status,
+
+      // ids (helpful for telemetry + recovery math)
+      contact_id,
+      opportunity_id,
+    };
+
+    // ---- WRITE TO BLOBS STORE ----
     const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
     const store = getStore({ name: storeName });
 
-    // ---- LOCATION NORMALIZATION (fixes [object Object]) ----
-    const locRaw =
-      body.location ??
-      body.location_id ??
-      body.locationId ??
-      body.locationID ??
-      "";
+    // event key: stable + unique; keep newest-last index behavior your summary expects
+    const key = `event:${Date.now()}:${randomId()}`;
+    await store.set(key, JSON.stringify(ev));
 
-    const location =
-      typeof locRaw === "string"
-        ? String(locRaw).trim()
-        : typeof locRaw === "object" && locRaw
-          ? String(
-              locRaw.id ||
-                locRaw.location_id ||
-                locRaw.locationId ||
-                locRaw._id ||
-                ""
-            ).trim()
-          : "";
+    // Update index:events (newest last)
+    const idxRaw = await readJSON(store, "index:events");
+    const keys = normalizeIndex(idxRaw);
+    keys.push(key);
 
-    const event = {
-      ts: new Date().toISOString(),
+    // Optional cap (safety): keeps index from growing forever.
+    // Additive: does not delete old event blobs; just caps index list.
+    const maxIndex = Number(process.env.ACX_MATRIX_MAX_INDEX || 5000);
+    const trimmed = keys.length > maxIndex ? keys.slice(keys.length - maxIndex) : keys;
 
-      // identity
-      account: String(body.account || body.account_name || "ACX"),
-      location,
+    await store.set("index:events", JSON.stringify(trimmed));
 
-      // metrics (health pings)
-      uptime: Number(body.uptime ?? 0),
-      conversion: Number(body.conversion ?? 0),
-      response_ms: Number(body.response_ms ?? 0),
-      quotes_recovered: Number(body.quotes_recovered ?? 0),
-
-      // IMPORTANT: prefer acx_integrity (your locked key)
-      integrity: String(body.acx_integrity ?? body.integrity ?? "unknown").toLowerCase(),
-
-      // run tracking
-      run_id: String(body.run_id || `run-${Date.now()}`),
-
-      // Phase 2 (additive; optional)
-      event_name: String(body.event ?? body.event_name ?? ""),
-      stage: String(body.stage ?? ""),
-      priority: String(body.priority ?? ""),
-      event_at: String(body.event_at ?? ""),
-      contact_id: String(body.contact_id ?? ""),
-    };
-
-    if (!event.location) return json({ ok: false, error: "Missing location" }, 400);
-
-    const key = `event:${event.location}:${Date.now()}`;
-
-    // 1) Write event
-    await writeJSON(store, key, event);
-
-    // 2) Update global index
-    const rawGlobal = await readJSON(store, "index:events");
-    const globalKeys = normalizeIndex(rawGlobal);
-    const nextGlobal = uniqAppend(globalKeys, key, 5000);
-    await writeJSON(store, "index:events", { keys: nextGlobal });
-
-    // 3) Update per-location index
-    const locIndexKey = `index:loc:${event.location}`;
-    const rawLoc = await readJSON(store, locIndexKey);
-    const locKeys = normalizeIndex(rawLoc);
-    const nextLoc = uniqAppend(locKeys, key, 2000);
-    await writeJSON(store, locIndexKey, { keys: nextLoc });
-
-    return json({
-      ok: true,
-      stored: { key, store: storeName },
-      index: { global_count: nextGlobal.length, loc_count: nextLoc.length },
-      event,
-    });
+    return json(200, { ok: true, stored: true, key, store: storeName });
   } catch (e) {
-    return json({ ok: false, error: e?.message || "Unknown error" }, 500);
+    return json(500, { ok: false, error: e?.message || "Unknown error" });
   }
 };
