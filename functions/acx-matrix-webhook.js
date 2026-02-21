@@ -80,16 +80,52 @@ export default async (req) => {
     const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
     const store = getStore({ name: storeName });
 
+    // ---- LOCATION NORMALIZATION (fixes [object Object]) ----
+    const locRaw =
+      body.location ??
+      body.location_id ??
+      body.locationId ??
+      body.locationID ??
+      "";
+
+    const location =
+      typeof locRaw === "string"
+        ? String(locRaw).trim()
+        : typeof locRaw === "object" && locRaw
+          ? String(
+              locRaw.id ||
+                locRaw.location_id ||
+                locRaw.locationId ||
+                locRaw._id ||
+                ""
+            ).trim()
+          : "";
+
     const event = {
       ts: new Date().toISOString(),
+
+      // identity
       account: String(body.account || body.account_name || "ACX"),
-      location: String(body.location || body.location_id || ""),
+      location,
+
+      // metrics (health pings)
       uptime: Number(body.uptime ?? 0),
       conversion: Number(body.conversion ?? 0),
       response_ms: Number(body.response_ms ?? 0),
       quotes_recovered: Number(body.quotes_recovered ?? 0),
-      integrity: String(body.integrity || "unknown").toLowerCase(),
+
+      // IMPORTANT: prefer acx_integrity (your locked key)
+      integrity: String(body.acx_integrity ?? body.integrity ?? "unknown").toLowerCase(),
+
+      // run tracking
       run_id: String(body.run_id || `run-${Date.now()}`),
+
+      // Phase 2 (additive; optional)
+      event_name: String(body.event ?? body.event_name ?? ""),
+      stage: String(body.stage ?? ""),
+      priority: String(body.priority ?? ""),
+      event_at: String(body.event_at ?? ""),
+      contact_id: String(body.contact_id ?? ""),
     };
 
     if (!event.location) return json({ ok: false, error: "Missing location" }, 400);
