@@ -2,8 +2,10 @@
 // ACX Matrix ingest endpoint (GHL + Sentinel + curl)
 // - Stores each event row
 // - Maintains per-location summary (last_seen + metrics + integrity)
-// - KEY FIX: integrity is preserved when missing/unknown in new events
-// - Also fixes "location: [object Object]" by extracting .id when location is an object
+// - Preserves integrity when incoming event has missing/unknown integrity
+// - Fixes location "[object Object]" by extracting .id when location is an object
+// - FIX: Normalizes GHL customData[foo] keys so you do NOT need to change webhook fields
+// - FIX: Single auth source of truth: ACX_SECRET (no ACX_WEBHOOK_SECRET drift)
 
 import { getStore } from "@netlify/blobs";
 
@@ -16,13 +18,20 @@ const json = (status, obj) =>
     },
   });
 
-const methodNotAllowed = () => json(405, { ok: false, error: "Method Not Allowed" });
+const methodNotAllowed = () =>
+  json(405, { ok: false, error: "Method Not Allowed" });
 const unauthorized = () => json(401, { ok: false, error: "Unauthorized" });
 
 const checkAuth = (req) => {
-  const expected = process.env.ACX_SECRET;
+  const expected = process.env.ACX_SECRET || "";
   if (!expected) return false;
-  const got = req.headers.get("x-acx-secret") || req.headers.get("X-ACX-SECRET");
+
+  const got =
+    req.headers.get("x-acx-secret") ||
+    req.headers.get("X-ACX-SECRET") ||
+    req.headers.get("X-Acx-Secret") ||
+    "";
+
   return !!got && got === expected;
 };
 
@@ -65,13 +74,7 @@ const pick = (obj, keys) => {
 const extractLocation = (raw) => {
   // If GHL sends location object, extract ID
   if (raw && typeof raw === "object") {
-    return (
-      raw.id ||
-      raw.locationId ||
-      raw.location_id ||
-      raw._id ||
-      "" // fallback
-    );
+    return raw.id || raw.locationId || raw.location_id || raw._id || "";
   }
   const s = asString(raw).trim();
   // if it is literally "[object Object]" return empty to avoid polluting summaries
@@ -106,6 +109,29 @@ function pushIndex(arr, item, maxLen) {
   return next;
 }
 
+// Normalize GHL "customData[foo]" payload keys into top-level keys
+function normalizeGhlCustomData(body) {
+  if (!body || typeof body !== "object") return body;
+
+  // 1) Promote customData[foo] -> foo
+  for (const [k, v] of Object.entries(body)) {
+    const m = /^customData\[(.+?)\]$/.exec(k);
+    if (m && m[1]) {
+      const key = m[1].trim();
+      if (key && body[key] === undefined) body[key] = v;
+    }
+  }
+
+  // 2) Merge body.customData (if present) -> top-level
+  if (body.customData && typeof body.customData === "object") {
+    for (const [k, v] of Object.entries(body.customData)) {
+      if (body[k] === undefined) body[k] = v;
+    }
+  }
+
+  return body;
+}
+
 // ---------- main ----------
 export default async (req) => {
   if (req.method === "OPTIONS") return json(200, { ok: true });
@@ -119,33 +145,54 @@ export default async (req) => {
     body = {};
   }
 
+  // IMPORTANT: normalize GHL customData[foo] keys
+  body = normalizeGhlCustomData(body);
+
   // ---- parse incoming ----
-  const account = asString(pick(body, ["account", "ACX", "acct"]) || "ACX").trim() || "ACX";
+  const account =
+    asString(pick(body, ["account", "acct"]) || "ACX").trim() || "ACX";
 
   const location = extractLocation(
-    pick(body, ["location", "location_id", "locationId", "customData.location"])
+    pick(body, ["location", "location_id", "locationId"])
   );
 
   // metrics (optional)
-  const uptime = asNumber(pick(body, ["uptime", "customData.uptime"]), 0);
-  const conversion = asNumber(pick(body, ["conversion", "conv", "customData.conversion"]), 0);
-  const response_ms = asNumber(pick(body, ["response_ms", "resp", "customData.response_ms"]), 0);
-  const quotes_recovered = asNumber(pick(body, ["quotes_recovered", "quotes", "customData.quotes_recovered"]), 0);
+  const uptime = asNumber(pick(body, ["uptime"]), 0);
+  const conversion = asNumber(pick(body, ["conversion", "conv"]), 0);
+  const response_ms = asNumber(pick(body, ["response_ms", "resp"]), 0);
+  const quotes_recovered = asNumber(
+    pick(body, ["quotes_recovered", "quotes"]),
+    0
+  );
 
   // integrity can come in multiple keys
   const integrityRaw = pick(body, ["acx_integrity", "integrity"]);
   const integrity = normIntegrity(integrityRaw) || "unknown";
 
   // telemetry extras (optional)
-  const run_id = asString(pick(body, ["run_id", "runId"]) || "").trim() || `run-${Date.now()}`;
+  const run_id =
+    asString(pick(body, ["run_id", "runId"]) || "").trim() ||
+    `run-${Date.now()}`;
 
-  const event_name = asString(pick(body, ["event_name", "acx_event"]) || "").trim();
-  const stage = asString(pick(body, ["stage", "acx_stage"]) || "").trim();
-  const priority = asString(pick(body, ["priority"]) || "").trim();
+  const event_name = asString(pick(body, ["event_name", "acx_event"]) || "")
+    .trim()
+    .toLowerCase(); // store consistently
+  const stage = asString(pick(body, ["stage", "acx_stage"]) || "")
+    .trim()
+    .toLowerCase();
+  const priority = asString(pick(body, ["priority"]) || "")
+    .trim()
+    .toLowerCase();
   const event_at = asString(pick(body, ["event_at"]) || "").trim();
 
-  const contact_id = asString(pick(body, ["contact_id", "contactId"]) || "").trim();
-  const opportunity_id = asString(pick(body, ["opportunity_id", "opportunityId"]) || "").trim();
+  const contact_id = asString(pick(body, ["contact_id", "contactId"]) || "")
+    .trim()
+    .toString();
+  const opportunity_id = asString(
+    pick(body, ["opportunity_id", "opportunityId"]) || ""
+  )
+    .trim()
+    .toString();
 
   // If location is missing, still store the event but don’t update per-location summary
   const ts = nowISO();
@@ -153,7 +200,9 @@ export default async (req) => {
   const store = getStore("acx-matrix");
 
   // ---- store event row ----
-  const eventKey = `event:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+  const eventKey = `event:${Date.now()}:${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
 
   const ev = {
     ts,
@@ -163,8 +212,8 @@ export default async (req) => {
     conversion,
     response_ms,
     quotes_recovered,
-    integrity,          // normalized
-    acx_integrity: integrity, // for debugging parity with your logs
+    integrity, // normalized
+    acx_integrity: integrity, // parity/debug
     run_id,
     source: asString(pick(body, ["source"]) || "ghl"),
 
@@ -175,9 +224,6 @@ export default async (req) => {
     event_at,
     contact_id,
     opportunity_id,
-
-    // keep raw payload for debugging if you want (comment out if not needed)
-    // _raw: body,
   };
 
   await setJson(store, eventKey, ev);
@@ -209,12 +255,12 @@ export default async (req) => {
         ? newIntegrity
         : prevIntegrity || "unknown";
 
+    // IMPORTANT: preserve prior metrics if incoming is 0/blank
     const locSummary = {
       location,
       account,
       last_seen: ts,
 
-      // If webhook didn’t send metrics, keep prior values instead of nuking to 0
       uptime: uptime || prevSummary.uptime || 0,
       conversion: conversion || prevSummary.conversion || 0,
       response_ms: response_ms || prevSummary.response_ms || 0,
@@ -228,7 +274,6 @@ export default async (req) => {
     // Maintain a simple locations list for the dashboard
     const locListKey = `locations:${account}`;
     const locList = await getJson(store, locListKey, []);
-    const exists = Array.isArray(locList) && locList.find((x) => x?.location === location);
     const nextLocList = Array.isArray(locList) ? locList.filter(Boolean) : [];
 
     const item = {
@@ -242,13 +287,18 @@ export default async (req) => {
       integrity: locSummary.integrity,
     };
 
-    if (exists) {
-      for (let i = 0; i < nextLocList.length; i++) {
-        if (nextLocList[i]?.location === location) nextLocList[i] = item;
+    // replace existing or add new
+    let replaced = false;
+    for (let i = 0; i < nextLocList.length; i++) {
+      if (
+        nextLocList[i]?.account === account &&
+        nextLocList[i]?.location === location
+      ) {
+        nextLocList[i] = item;
+        replaced = true;
       }
-    } else {
-      nextLocList.unshift(item);
     }
+    if (!replaced) nextLocList.unshift(item);
 
     // Deduplicate
     const seen = new Set();
@@ -260,10 +310,10 @@ export default async (req) => {
         deduped.push(r);
       }
     }
+
     await setJson(store, locListKey, deduped);
   }
 
-  // ---- response shaped like what you’re seeing in logs ----
   return json(200, {
     ok: true,
     stored: true,
