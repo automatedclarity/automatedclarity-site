@@ -8,7 +8,7 @@ const json = (obj, status = 200) =>
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
 
-// ✅ ADD: header auth fallback for curl/testing (uses ACX_SECRET only)
+// ✅ header auth fallback for curl/testing (uses ACX_SECRET only)
 const checkAuth = (req) => {
   const expected = process.env.ACX_SECRET || "";
   if (!expected) return false;
@@ -53,14 +53,14 @@ function toNum(x, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-// Treat as "metrics/health" if it contains any non-zero numeric signal.
-// This prevents workflow events (often 0s) from overwriting dashboard tiles.
+// ✅ FIX: Treat as "metrics/health" if the metric fields are PRESENT (even if 0).
+// This prevents "0" values from being ignored forever.
 function hasMetrics(ev) {
-  const u = toNum(ev?.uptime, null);
-  const c = toNum(ev?.conversion, null);
-  const r = toNum(ev?.response_ms, null);
-  const q = toNum(ev?.quotes_recovered, null);
-  return [u, c, r, q].some((v) => v !== null && v !== 0);
+  const u = ev?.uptime;
+  const c = ev?.conversion;
+  const r = ev?.response_ms;
+  const q = ev?.quotes_recovered;
+  return [u, c, r, q].some((v) => v !== undefined && v !== null && v !== "");
 }
 
 // includes Phase 2 telemetry keys so WF3/handled don't overwrite tiles
@@ -110,8 +110,7 @@ export default async (req) => {
     if (req.method !== "GET")
       return json({ ok: false, error: "Method Not Allowed" }, 405);
 
-    // ✅ KEEP LOGIN EXACTLY AS BEFORE (session cookie) for dashboard
-    // ✅ BUT allow x-acx-secret for curl/testing
+    // ✅ Auth: allow either session cookie (dashboard) OR x-acx-secret (curl/testing)
     if (!checkAuth(req)) {
       const s = requireSession(req);
       if (!s.ok) return s.response;
@@ -126,9 +125,7 @@ export default async (req) => {
     const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
     const store = getStore({ name: storeName });
 
-    // ✅ KEY FIX: support both index keys (additive only)
-    // - prefer index:events (existing)
-    // - fallback to index:global (what webhook writes in your pasted code)
+    // ✅ support both index keys (additive only)
     let idxRaw = await readJSON(store, "index:events");
     let keys = normalizeIndex(idxRaw);
 
@@ -148,9 +145,9 @@ export default async (req) => {
       if (ev && typeof ev === "object") events.push(ev);
     }
 
-    // Locations summary (additive):
+    // Locations summary:
     // - last_seen + integrity come from newest event of ANY type
-    // - metrics come from newest METRICS event (so workflow events can't zero tiles)
+    // - metrics come from newest METRICS event (so workflow events can't overwrite tiles)
     const locState = new Map();
 
     for (const ev of events) {
@@ -160,7 +157,7 @@ export default async (req) => {
       if (!locState.has(loc)) {
         locState.set(loc, {
           latestAny: ev, // events are newest-first
-          latestMetrics: null, // fill once with newest metrics event
+          latestMetrics: null,
         });
       }
 
@@ -297,7 +294,9 @@ export default async (req) => {
     const avgResponseMs = responseTimeCount
       ? Math.round(responseTimeSumMs / responseTimeCount)
       : null;
-    const recoveryRate = stalledContacts ? recoveredContacts / stalledContacts : null;
+    const recoveryRate = stalledContacts
+      ? recoveredContacts / stalledContacts
+      : null;
 
     return json({
       ok: true,
