@@ -197,7 +197,10 @@ export default async (req) => {
   // If location is missing, still store the event but don’t update per-location summary
   const ts = nowISO();
 
-  const store = getStore("acx-matrix");
+  // ✅ FIX: use the same blob store selection logic as summary
+  const store = getStore({
+    name: process.env.ACX_BLOBS_STORE || "acx-matrix",
+  });
 
   // ---- store event row ----
   const eventKey = `event:${Date.now()}:${Math.random()
@@ -318,6 +321,6 @@ export default async (req) => {
     ok: true,
     stored: true,
     key: eventKey,
-    store: "acx-matrix",
+    store: process.env.ACX_BLOBS_STORE || "acx-matrix",
   });
 };
