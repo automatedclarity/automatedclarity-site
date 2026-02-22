@@ -8,20 +8,6 @@ const json = (obj, status = 200) =>
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
 
-// ✅ header auth fallback for curl/testing (uses ACX_SECRET only)
-const checkAuth = (req) => {
-  const expected = process.env.ACX_SECRET || "";
-  if (!expected) return false;
-
-  const got =
-    req.headers.get("x-acx-secret") ||
-    req.headers.get("X-ACX-SECRET") ||
-    req.headers.get("X-Acx-Secret") ||
-    "";
-
-  return !!got && got === expected;
-};
-
 function normalizeIndex(raw) {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
@@ -53,14 +39,13 @@ function toNum(x, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-// ✅ FIX: Treat as "metrics/health" if the metric fields are PRESENT (even if 0).
-// This prevents "0" values from being ignored forever.
+// Treat as "metrics/health" if it contains any non-zero numeric signal.
 function hasMetrics(ev) {
-  const u = ev?.uptime;
-  const c = ev?.conversion;
-  const r = ev?.response_ms;
-  const q = ev?.quotes_recovered;
-  return [u, c, r, q].some((v) => v !== undefined && v !== null && v !== "");
+  const u = toNum(ev?.uptime, null);
+  const c = toNum(ev?.conversion, null);
+  const r = toNum(ev?.response_ms, null);
+  const q = toNum(ev?.quotes_recovered, null);
+  return [u, c, r, q].some((v) => v !== null && v !== 0);
 }
 
 // includes Phase 2 telemetry keys so WF3/handled don't overwrite tiles
@@ -77,8 +62,26 @@ function isWorkflowEvent(ev) {
 
 // Additive integrity normalization (supports old "integrity" + new "acx_integrity")
 function getIntegrity(ev) {
-  const v = String(ev?.acx_integrity || ev?.integrity || "unknown").toLowerCase();
+  const v = String(ev?.acx_integrity || ev?.integrity || "unknown")
+    .toLowerCase()
+    .trim();
   return v || "unknown";
+}
+
+// Normalize location so you never get "[object Object]"
+function getLocationValue(ev) {
+  const v = ev?.location;
+  if (!v) return "";
+  if (typeof v === "string") return v;
+  if (typeof v === "number") return String(v);
+  if (typeof v === "object") {
+    // common shapes
+    if (v.id) return String(v.id);
+    if (v.locationId) return String(v.locationId);
+    // last resort: avoid "[object Object]"
+    return "";
+  }
+  return "";
 }
 
 // --- Phase 2 helpers (additive-only) ---
@@ -105,38 +108,64 @@ function getField(e, key) {
   return e?.[key] ?? e?.data?.[key] ?? null;
 }
 
+function dedupeKeepOrder(arr) {
+  const seen = new Set();
+  const out = [];
+  for (const k of arr) {
+    const s = String(k || "").trim();
+    if (!s) continue;
+    if (seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
+}
+
+// Sort by event key timestamp if it matches "event:<ms>:<rand>"
+function sortEventKeysAscending(keys) {
+  const parse = (k) => {
+    const m = /^event:(\d+):/.exec(k);
+    return m ? Number(m[1]) : null;
+  };
+  return keys.slice().sort((a, b) => {
+    const ta = parse(a);
+    const tb = parse(b);
+    if (ta == null && tb == null) return 0;
+    if (ta == null) return -1;
+    if (tb == null) return 1;
+    return ta - tb;
+  });
+}
+
 export default async (req) => {
   try {
     if (req.method !== "GET")
       return json({ ok: false, error: "Method Not Allowed" }, 405);
 
-    // ✅ Auth: allow either session cookie (dashboard) OR x-acx-secret (curl/testing)
-    if (!checkAuth(req)) {
-      const s = requireSession(req);
-      if (!s.ok) return s.response;
-    }
+    // ✅ KEEP LOGIN EXACTLY AS BEFORE (session cookie)
+    const s = requireSession(req);
+    if (!s.ok) return s.response;
 
     const url = new URL(req.url);
-    const limit = Math.max(
-      1,
-      Math.min(500, Number(url.searchParams.get("limit") || 50))
-    );
+    const limit = Math.max(1, Math.min(500, Number(url.searchParams.get("limit") || 50)));
 
     const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
     const store = getStore({ name: storeName });
 
-    // ✅ support both index keys (additive only)
-    let idxRaw = await readJSON(store, "index:events");
-    let keys = normalizeIndex(idxRaw);
+    // ✅ EMPIRE FIX: ALWAYS MERGE BOTH INDEXES
+    const idxEventsRaw = await readJSON(store, "index:events");
+    const idxGlobalRaw = await readJSON(store, "index:global");
 
-    if (!keys.length) {
-      const idxGlobal = await readJSON(store, "index:global");
-      keys = normalizeIndex(idxGlobal);
-    }
+    const idxEvents = normalizeIndex(idxEventsRaw);
+    const idxGlobal = normalizeIndex(idxGlobalRaw);
+
+    // union + stable sort by embedded timestamp
+    let keys = dedupeKeepOrder([...idxEvents, ...idxGlobal]);
+    keys = sortEventKeysAscending(keys);
 
     const index_count = keys.length;
 
-    // newest last in our index, so read from the end
+    // newest last in index, so read from the end
     const tail = keys.slice(Math.max(0, keys.length - limit)).reverse();
 
     const events = [];
@@ -147,17 +176,17 @@ export default async (req) => {
 
     // Locations summary:
     // - last_seen + integrity come from newest event of ANY type
-    // - metrics come from newest METRICS event (so workflow events can't overwrite tiles)
+    // - metrics come from newest METRICS event (so workflow events can't zero tiles)
     const locState = new Map();
 
     for (const ev of events) {
-      const loc = String(ev.location || "");
+      const loc = getLocationValue(ev);
       if (!loc) continue;
 
       if (!locState.has(loc)) {
         locState.set(loc, {
-          latestAny: ev, // events are newest-first
-          latestMetrics: null,
+          latestAny: ev,       // events are newest-first
+          latestMetrics: null, // fill once with newest metrics event
         });
       }
 
@@ -187,7 +216,7 @@ export default async (req) => {
     // Series (charts): metrics events only
     const series = {};
     for (const ev of events.slice().reverse()) {
-      const loc = String(ev.location || "");
+      const loc = getLocationValue(ev);
       if (!loc) continue;
 
       if (!hasMetrics(ev) || isWorkflowEvent(ev)) continue;
@@ -213,11 +242,7 @@ export default async (req) => {
       const acx_stage = getField(e, "acx_stage");
       const acx_status = getField(e, "acx_status");
 
-      if (
-        acx_event === "wf3_enforcement" &&
-        wf3Stages.has(acx_stage) &&
-        acx_status === "stall"
-      ) {
+      if (acx_event === "wf3_enforcement" && wf3Stages.has(acx_stage) && acx_status === "stall") {
         wf3StallEvents.push(e);
         continue;
       }
@@ -291,12 +316,8 @@ export default async (req) => {
       }
     }
 
-    const avgResponseMs = responseTimeCount
-      ? Math.round(responseTimeSumMs / responseTimeCount)
-      : null;
-    const recoveryRate = stalledContacts
-      ? recoveredContacts / stalledContacts
-      : null;
+    const avgResponseMs = responseTimeCount ? Math.round(responseTimeSumMs / responseTimeCount) : null;
+    const recoveryRate = stalledContacts ? recoveredContacts / stalledContacts : null;
 
     return json({
       ok: true,
@@ -316,8 +337,7 @@ export default async (req) => {
           recovered_contacts: recoveredContacts,
           recovery_rate: recoveryRate,
           avg_response_ms: avgResponseMs,
-          avg_response_seconds:
-            avgResponseMs != null ? Math.round(avgResponseMs / 1000) : null,
+          avg_response_seconds: avgResponseMs != null ? Math.round(avgResponseMs / 1000) : null,
         },
       },
     });
