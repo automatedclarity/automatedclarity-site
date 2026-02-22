@@ -8,10 +8,25 @@ const json = (obj, status = 200) =>
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
 
+// ✅ ADD: header auth fallback for curl/testing (uses ACX_SECRET only)
+const checkAuth = (req) => {
+  const expected = process.env.ACX_SECRET || "";
+  if (!expected) return false;
+
+  const got =
+    req.headers.get("x-acx-secret") ||
+    req.headers.get("X-ACX-SECRET") ||
+    req.headers.get("X-Acx-Secret") ||
+    "";
+
+  return !!got && got === expected;
+};
+
 function normalizeIndex(raw) {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
-  if (typeof raw === "object" && Array.isArray(raw.keys)) return raw.keys.map(String).filter(Boolean);
+  if (typeof raw === "object" && Array.isArray(raw.keys))
+    return raw.keys.map(String).filter(Boolean);
   return [];
 }
 
@@ -92,14 +107,21 @@ function getField(e, key) {
 
 export default async (req) => {
   try {
-    if (req.method !== "GET") return json({ ok: false, error: "Method Not Allowed" }, 405);
+    if (req.method !== "GET")
+      return json({ ok: false, error: "Method Not Allowed" }, 405);
 
-    // ✅ KEEP LOGIN EXACTLY AS BEFORE (session cookie)
-    const s = requireSession(req);
-    if (!s.ok) return s.response;
+    // ✅ KEEP LOGIN EXACTLY AS BEFORE (session cookie) for dashboard
+    // ✅ BUT allow x-acx-secret for curl/testing
+    if (!checkAuth(req)) {
+      const s = requireSession(req);
+      if (!s.ok) return s.response;
+    }
 
     const url = new URL(req.url);
-    const limit = Math.max(1, Math.min(500, Number(url.searchParams.get("limit") || 50)));
+    const limit = Math.max(
+      1,
+      Math.min(500, Number(url.searchParams.get("limit") || 50))
+    );
 
     const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
     const store = getStore({ name: storeName });
@@ -137,7 +159,7 @@ export default async (req) => {
 
       if (!locState.has(loc)) {
         locState.set(loc, {
-          latestAny: ev,       // events are newest-first
+          latestAny: ev, // events are newest-first
           latestMetrics: null, // fill once with newest metrics event
         });
       }
@@ -194,7 +216,11 @@ export default async (req) => {
       const acx_stage = getField(e, "acx_stage");
       const acx_status = getField(e, "acx_status");
 
-      if (acx_event === "wf3_enforcement" && wf3Stages.has(acx_stage) && acx_status === "stall") {
+      if (
+        acx_event === "wf3_enforcement" &&
+        wf3Stages.has(acx_stage) &&
+        acx_status === "stall"
+      ) {
         wf3StallEvents.push(e);
         continue;
       }
@@ -268,7 +294,9 @@ export default async (req) => {
       }
     }
 
-    const avgResponseMs = responseTimeCount ? Math.round(responseTimeSumMs / responseTimeCount) : null;
+    const avgResponseMs = responseTimeCount
+      ? Math.round(responseTimeSumMs / responseTimeCount)
+      : null;
     const recoveryRate = stalledContacts ? recoveredContacts / stalledContacts : null;
 
     return json({
@@ -289,7 +317,8 @@ export default async (req) => {
           recovered_contacts: recoveredContacts,
           recovery_rate: recoveryRate,
           avg_response_ms: avgResponseMs,
-          avg_response_seconds: avgResponseMs != null ? Math.round(avgResponseMs / 1000) : null,
+          avg_response_seconds:
+            avgResponseMs != null ? Math.round(avgResponseMs / 1000) : null,
         },
       },
     });
