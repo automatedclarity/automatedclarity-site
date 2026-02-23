@@ -1,141 +1,83 @@
 // functions/acx-matrix-ingest-form.js
-// Browser-safe ingest relay:
-// - Requires cookie session (same auth model as /matrix)
-// - Forwards to acx-matrix-webhook with x-acx-secret server-side
-// - Keeps schema locked to: account, location, run_id, acx_integrity, uptime, response_ms, conversion, quotes_recovered
+// Browser ingest form -> server-side forwarder (no secrets in client)
+// - Requires session cookie (same auth model as /matrix)
+// - Forwards payload to acx-matrix-webhook with x-acx-secret + x-acx-source: ingest
+// - Ensures integrity enum only: ok | degraded | critical (else -> unknown)
 
 import { requireSession } from "./_lib/session.js";
 
-const json = (obj, status = 200) =>
+const json = (status, obj) =>
   new Response(JSON.stringify(obj), {
     status,
-    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      "Access-Control-Allow-Origin": "*",
+    },
   });
 
-async function enforceSession(req) {
-  try {
-    const res = await requireSession(req);
-
-    // supports both patterns:
-    // - requireSession throws on fail
-    // - OR returns { ok, response }
-    if (res && typeof res === "object" && "ok" in res) {
-      if (res.ok) return null;
-      return res.response || json({ ok: false, error: "Unauthorized" }, 401);
-    }
-
-    // if it returned a Response directly, pass it through
-    if (res instanceof Response) return res;
-
-    return null; // session ok
-  } catch {
-    return json({ ok: false, error: "Unauthorized" }, 401);
-  }
-}
-
-function pick(obj, keys) {
-  for (const k of keys) {
-    const v = obj?.[k];
-    if (v !== undefined && v !== null && String(v).trim() !== "") return v;
-  }
-  return "";
-}
-
-function toStringSafe(v) {
-  if (v === undefined || v === null) return "";
-  return String(v).trim();
-}
+const normIntegrity = (v) => {
+  const s = String(v || "").trim().toLowerCase();
+  if (s === "ok") return "ok";
+  if (s === "degraded") return "degraded";
+  if (s === "critical") return "critical";
+  return "unknown";
+};
 
 export default async (req) => {
+  if (req.method === "OPTIONS") return json(200, { ok: true });
   if (req.method !== "POST")
-    return json({ ok: false, error: "Method Not Allowed" }, 405);
+    return json(405, { ok: false, error: "Method Not Allowed" });
 
-  const deny = await enforceSession(req);
-  if (deny) return deny;
+  // cookie session only
+  try {
+    await requireSession(req);
+  } catch {
+    return json(401, { ok: false, error: "Unauthorized" });
+  }
+
+  const secret = process.env.ACX_SECRET || "";
+  if (!secret) return json(500, { ok: false, error: "Server missing ACX_SECRET" });
 
   let body = {};
   try {
     body = await req.json();
   } catch {
-    return json({ ok: false, error: "Invalid JSON body" }, 400);
+    body = {};
   }
 
-  // Accept multiple client naming styles so we DON'T drift later.
-  const account = toStringSafe(
-    pick(body, ["account", "account_name", "accountName", "AccountName"])
-  );
+  // normalize integrity to locked enum
+  if ("acx_integrity" in body) body.acx_integrity = normIntegrity(body.acx_integrity);
+  if ("integrity" in body) body.integrity = normIntegrity(body.integrity);
 
-  const location = toStringSafe(
-    pick(body, ["location", "location_id", "locationId", "Location", "LocationId"])
-  );
+  // build absolute URL to webhook (works on Netlify)
+  const base =
+    process.env.URL ||
+    (req.headers.get("x-forwarded-proto") && req.headers.get("host")
+      ? `${req.headers.get("x-forwarded-proto")}://${req.headers.get("host")}`
+      : "");
 
-  const run_id = toStringSafe(
-    pick(body, ["run_id", "runId", "test_run_id", "testRunId", "TestRunID"])
-  ) || `run_INGEST_FORM_${Date.now()}`;
+  if (!base) return json(500, { ok: false, error: "Unable to resolve base URL" });
 
-  const acx_integrity = toStringSafe(
-    pick(body, ["acx_integrity", "integrity", "integrity_status", "integrityStatus"])
-  );
-
-  const uptime = toStringSafe(pick(body, ["uptime", "uptime_pct", "uptimePct"]));
-  const response_ms = toStringSafe(pick(body, ["response_ms", "responseMs", "response"]));
-  const conversion = toStringSafe(pick(body, ["conversion", "conv", "Conv"]));
-  const quotes_recovered = toStringSafe(
-    pick(body, ["quotes_recovered", "quotesRecovered", "quotes", "QuotesRecovered"])
-  );
-
-  if (!account || !location) {
-    return json(
-      { ok: false, error: "Missing required fields: account, location" },
-      400
-    );
-  }
-
-  const secret =
-    process.env.ACX_SECRET ||
-    process.env.ACX_WEBHOOK_SECRET ||
-    process.env.ACX_MATRIX_SECRET ||
-    process.env.ACX_SHARED_SECRET ||
-    process.env.X_ACX_SECRET;
-
-  if (!secret) {
-    return json(
-      { ok: false, error: "Server missing ACX secret env var" },
-      500
-    );
-  }
-
-  const origin = new URL(req.url).origin;
-
-  // Forward to your existing writer (single source of truth)
-  const forwardUrl = `${origin}/.netlify/functions/acx-matrix-webhook`;
-
-  const payload = {
-    account,
-    location,
-    run_id,
-    acx_integrity,
-    uptime,
-    response_ms,
-    conversion,
-    quotes_recovered,
-  };
+  const forwardUrl = `${base}/.netlify/functions/acx-matrix-webhook`;
 
   const r = await fetch(forwardUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "x-acx-secret": secret,
-      "x-acx-source": "ingest_form",
+      "x-acx-source": "ingest",
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(body),
   });
 
   const text = await r.text();
-  // try to pass JSON through if possible
+  let out = null;
   try {
-    return json({ ok: true, forwarded: true, upstream: JSON.parse(text) }, r.status);
+    out = JSON.parse(text);
   } catch {
-    return new Response(text, { status: r.status, headers: { "Content-Type": "text/plain" } });
+    out = { raw: text };
   }
+
+  return json(r.status, out);
 };
