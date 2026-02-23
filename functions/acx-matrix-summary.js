@@ -3,11 +3,13 @@
 // - Browser dashboard still uses requireSession(cookie)
 // - CLI/automation can use x-acx-secret header (same as webhook)
 //
-// ✅ Fixes:
-// - "optimal" is normalized to "ok"
-// - recent table returns METRICS events only (prevents WF webhooks with zeros from polluting)
-// - location is normalized so you never get "[object Object]"
-// - supports metrics coming in at top-level OR inside data:{...}
+// ✅ Fixes (LOCKED):
+// - Integrity enum ONLY: ok | degraded | critical | unknown (no "optimal")
+// - Locations tiles are read from webhook-maintained summaries (NOT inferred from recent events)
+//   → prevents WF3/telemetry/limit from zeroing tiles
+// - Recent table is METRICS ONLY (prevents WF webhooks with zeros from polluting)
+// - Location normalized so you never get "[object Object]"
+// - Supports metrics in top-level OR inside data:{...}
 
 import { getStore } from "@netlify/blobs";
 import { requireSession } from "./_lib/session.js";
@@ -18,6 +20,7 @@ const json = (obj, status = 200) =>
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
 
+// ---------------- helpers ----------------
 function normalizeIndex(raw) {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
@@ -76,13 +79,10 @@ function getLocationValue(ev) {
   return "";
 }
 
-// Normalize integrity to ONLY: ok | degraded | critical | unknown
+// LOCKED integrity enum: ok | degraded | critical | unknown
 function normalizeIntegrity(raw) {
   const v = String(raw || "unknown").toLowerCase().trim();
   if (!v) return "unknown";
-  if (v === "optimal") return "ok";
-  if (v === "green") return "ok";
-  if (v === "good") return "ok";
   if (v === "ok") return "ok";
   if (v === "degraded" || v === "warn" || v === "warning") return "degraded";
   if (v === "critical" || v === "crit" || v === "down") return "critical";
@@ -99,13 +99,11 @@ function getIntegrity(ev) {
   );
 }
 
-// Metrics can be in top-level OR inside data:{...}
 function getMetric(ev, key) {
   const v = getField(ev, key);
   return toNum(v, 0);
 }
 
-// Treat as a metrics/health payload if it has any numeric signal
 function hasMetrics(ev) {
   const u = getMetric(ev, "uptime");
   const c = getMetric(ev, "conversion");
@@ -114,7 +112,6 @@ function hasMetrics(ev) {
   return [u, c, r, q].some((n) => Number.isFinite(n) && n !== 0);
 }
 
-// Workflow/telemetry marker keys (so we can keep them OUT of metrics tiles)
 function isWorkflowEvent(ev) {
   return !!(
     getField(ev, "event_name") ||
@@ -154,7 +151,7 @@ function sortEventKeysAscending(keys) {
   });
 }
 
-// --- AUTH (cookie session OR x-acx-secret) ---
+// ---------------- AUTH (cookie session OR x-acx-secret) ----------------
 function header(req, name) {
   try {
     return req.headers.get(name);
@@ -163,40 +160,24 @@ function header(req, name) {
   }
 }
 
+// LOCKED: single secret source of truth (no env drift)
 function secretAllowed(req) {
   const got = header(req, "x-acx-secret");
-  if (!got) return false;
-
-  // Accept any of these env names (so we don't drift your env naming)
-  const candidates = [
-    process.env.ACX_SECRET,
-    process.env.ACX_WEBHOOK_SECRET,
-    process.env.ACX_MATRIX_SECRET,
-    process.env.ACX_SHARED_SECRET,
-    process.env.X_ACX_SECRET,
-  ].filter(Boolean);
-
-  if (!candidates.length) return false;
-  return candidates.some((s) => String(s) === String(got));
+  const expected = process.env.ACX_SECRET;
+  return !!got && !!expected && String(got) === String(expected);
 }
 
-// Keep session login for the browser, but allow x-acx-secret for curl
 async function enforceAuth(req) {
   // 1) cookie session path
   try {
     const res = await requireSession(req);
-    // support both patterns:
-    // - throws on fail
-    // - returns { ok, response }
     if (res && typeof res === "object" && "ok" in res) {
       if (res.ok) return null;
-      // if session failed, fall through to secret check
     } else {
-      // session ok
-      return null;
+      return null; // session OK
     }
   } catch {
-    // session failed, fall through to secret check
+    // fall through
   }
 
   // 2) secret header path
@@ -205,6 +186,7 @@ async function enforceAuth(req) {
   return json({ ok: false, error: "Unauthorized" }, 401);
 }
 
+// ---------------- main ----------------
 export default async (req) => {
   try {
     if (req.method !== "GET")
@@ -222,7 +204,31 @@ export default async (req) => {
     const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
     const store = getStore({ name: storeName });
 
-    // Merge both indexes (legacy-safe)
+    // Allow account override, default ACX
+    const accountParam = String(url.searchParams.get("account") || "ACX").trim() || "ACX";
+
+    // ---------- LOCATIONS (SOURCE OF TRUTH) ----------
+    // ✅ Pull precomputed location tiles written by webhook:
+    // - locations:${account}
+    // This prevents WF3/telemetry/limit from ever zeroing tiles.
+    let locations = (await readJSON(store, `locations:${accountParam}`)) || [];
+    if (!Array.isArray(locations)) locations = [];
+
+    locations = locations
+      .filter((r) => r && r.location)
+      .map((r) => ({
+        location: String(r.location || ""),
+        account: String(r.account || accountParam),
+        last_seen: String(r.last_seen || ""),
+        uptime: Number(r.uptime || 0),
+        conversion: Number(r.conversion || 0),
+        response_ms: Number(r.response_ms || 0),
+        quotes_recovered: Number(r.quotes_recovered || 0),
+        integrity: normalizeIntegrity(r.integrity),
+      }));
+
+    // ---------- EVENTS (RECENT TABLE + SERIES) ----------
+    // We keep events for charts + recent rows, but do NOT use them to compute tiles.
     const idxEventsRaw = await readJSON(store, "index:events");
     const idxGlobalRaw = await readJSON(store, "index:global");
 
@@ -234,7 +240,7 @@ export default async (req) => {
 
     const index_count = keys.length;
 
-    // Pull tail (newest events)
+    // tail (newest events)
     const tailKeys = keys.slice(Math.max(0, keys.length - limit)).reverse();
 
     const allEvents = [];
@@ -243,65 +249,25 @@ export default async (req) => {
       if (ev && typeof ev === "object") allEvents.push(ev);
     }
 
-    // Normalize events so UI never sees location as object, and integrity is normalized
     const normalizedAll = allEvents.map((e) => ({
       ...e,
       location: getLocationValue(e),
       integrity: getIntegrity(e),
-      acx_integrity: getIntegrity(e), // keep both for safety
+      acx_integrity: getIntegrity(e),
       uptime: getMetric(e, "uptime"),
       conversion: getMetric(e, "conversion"),
       response_ms: getMetric(e, "response_ms"),
       quotes_recovered: getMetric(e, "quotes_recovered"),
     }));
 
-    // ✅ Recent table should be METRICS ONLY (prevents workflow webhooks from showing 0/unknown)
+    // ✅ Recent rows: metrics-only and not workflow telemetry
     const recent = normalizedAll.filter((e) => hasMetrics(e) && !isWorkflowEvent(e));
 
-    // Locations summary:
-    // - last_seen + integrity come from newest event of ANY type
-    // - metrics come from newest METRICS event (so workflow events can't zero tiles)
-    const locState = new Map();
-
-    for (const ev of normalizedAll) {
-      const loc = getLocationValue(ev);
-      if (!loc) continue;
-
-      if (!locState.has(loc)) {
-        locState.set(loc, {
-          latestAny: ev, // newest-first
-          latestMetrics: null,
-        });
-      }
-
-      const st = locState.get(loc);
-      if (!st.latestMetrics && hasMetrics(ev) && !isWorkflowEvent(ev)) {
-        st.latestMetrics = ev;
-      }
-    }
-
-    const locations = Array.from(locState.entries()).map(([loc, st]) => {
-      const any = st.latestAny;
-      const met = st.latestMetrics;
-
-      return {
-        location: String(loc),
-        account: String((met?.account || any?.account || "") || ""),
-        last_seen: String(any?.ts || any?.timestamp || any?.time || ""),
-        uptime: Number(met?.uptime || 0),
-        conversion: Number(met?.conversion || 0),
-        response_ms: Number(met?.response_ms || 0),
-        quotes_recovered: Number(met?.quotes_recovered || 0),
-        integrity: getIntegrity(any),
-      };
-    });
-
-    // Series (charts): metrics events only
+    // ✅ Series: metrics-only
     const series = {};
     for (const ev of recent.slice().reverse()) {
       const loc = getLocationValue(ev);
       if (!loc) continue;
-
       if (!series[loc]) series[loc] = [];
       series[loc].push({
         ts: ev.ts,
@@ -315,13 +281,10 @@ export default async (req) => {
 
     return json({
       ok: true,
-      recent, // ✅ metrics-only (what your UI should show)
+      recent,
       locations,
       series,
-      meta: {
-        store: storeName,
-        index_count,
-      },
+      meta: { store: storeName, index_count },
     });
   } catch (e) {
     return json({ ok: false, error: e?.message || "Unknown error" }, 500);
