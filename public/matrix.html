@@ -62,7 +62,7 @@
   .locrow:hover{ border-color:#2a375b; cursor:pointer; }
   .right { text-align: right; }
   .badge { padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 900; display: inline-block; text-transform: capitalize; }
-  .b-opt { background: #0d2a13; color: var(--good); border: 1px solid #1d4e26; }
+  .b-ok  { background: #0d2a13; color: var(--good); border: 1px solid #1d4e26; }
   .b-deg { background: #2b1d0d; color: var(--warn); border: 1px solid #4e3a1d; }
   .b-crit{ background: #2a0d0d; color: var(--bad); border: 1px solid #4e1d1d; }
   .b-unk { background: #1a1f2b; color: var(--unk); border: 1px solid #273149; }
@@ -81,7 +81,6 @@
   .sort{cursor:pointer; user-select:none}
   .sort span{opacity:.7;font-size:11px;margin-left:6px}
 
-  /* Drawer */
   .drawerBack{
     position:fixed; inset:0; background: rgba(0,0,0,.55);
     display:none; align-items: stretch; justify-content: flex-end; z-index:50;
@@ -166,7 +165,7 @@
     <div class="card"><div class="k">Locations</div><div class="v" id="c_locs">–</div></div>
     <div class="card"><div class="k">Critical</div><div class="v" id="c_crit">–</div></div>
     <div class="card"><div class="k">Degraded</div><div class="v" id="c_deg">–</div></div>
-    <div class="card"><div class="k">OK</div><div class="v" id="c_opt">–</div></div>
+    <div class="card"><div class="k">OK</div><div class="v" id="c_ok">–</div></div>
     <div class="card"><div class="k">Stale</div><div class="v" id="c_stale">–</div></div>
   </div>
 
@@ -201,7 +200,6 @@
   </table>
 </div>
 
-<!-- Drawer -->
 <div id="drawerBack" class="drawerBack">
   <div class="drawer">
     <div class="drawerTop">
@@ -244,14 +242,12 @@
 <script>
 const $ = (id) => document.getElementById(id);
 
-// Integrity -> badge class
-// Allowed: ok, degraded, critical, unknown
 const sevClass = (s) => {
-  const v = String(s || 'unknown').toLowerCase();
-  if (v === 'critical') return 'b-crit';
-  if (v === 'degraded') return 'b-deg';
-  if (v === 'ok') return 'b-opt';
-  return 'b-unk';
+  const v = String(s||"unknown").toLowerCase();
+  if (v === "critical") return "b-crit";
+  if (v === "degraded") return "b-deg";
+  if (v === "ok") return "b-ok";
+  return "b-unk";
 };
 
 function fmtAgo(iso){
@@ -270,14 +266,15 @@ function fmtAgo(iso){
 }
 
 function sparkline(points, min, max, stroke) {
-  if (!points.length) return '';
+  const p = (points||[]).filter(v => Number.isFinite(v));
+  if (!p.length) return '';
   const w=220, h=36, pad=4, span=w-(pad*2);
   const denom = Math.max(1e-9,(max-min));
-  const ys = points.map(v => {
+  const ys = p.map(v => {
     const cl = (v - min) / denom;
     return h - pad - (cl * (h-pad*2));
   });
-  const xs = points.map((_,i)=> pad + (i/(Math.max(1,points.length-1)))*span);
+  const xs = p.map((_,i)=> pad + (i/(Math.max(1,p.length-1)))*span);
   let d = `M ${xs[0]} ${ys[0]}`;
   for (let i=1;i<xs.length;i++) d += ` L ${xs[i]} ${ys[i]}`;
   return `<svg class="spark" viewBox="0 0 ${w} ${h}">
@@ -290,6 +287,19 @@ function isStale(lastSeenISO, staleMin){
   const t = new Date(lastSeenISO).getTime();
   if(Number.isNaN(t)) return true;
   return (Date.now() - t) > (staleMin * 60 * 1000);
+}
+
+function fmtNumOrDash(v, decimals){
+  if (v === null || v === undefined || v === "") return "—";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  return n.toFixed(decimals);
+}
+function fmtIntOrDash(v){
+  if (v === null || v === undefined || v === "") return "—";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  return String(Math.round(n));
 }
 
 let lastData = null;
@@ -320,23 +330,22 @@ function openDrawer(loc, data){
   $("d_title").textContent = (locRow?.account || "ACX") + " — Location";
   $("d_sub").textContent = loc;
 
-  $("d_seen").textContent = locRow?.last_seen ? new Date(locRow.last_seen).toLocaleString() + ` • ${fmtAgo(locRow.last_seen)}` : "–";
+  $("d_seen").textContent = locRow?.last_seen ? new Date(locRow.last_seen).toLocaleString() + ` • ${fmtAgo(locRow.last_seen)}` : "—";
   $("d_int").innerHTML = `<span class="badge ${sevClass((locRow?.integrity||'unknown'))}">${(locRow?.integrity||'unknown')}</span>`;
-  $("d_upt").textContent = (locRow?.uptime ?? 0).toFixed(1);
-  $("d_conv").textContent = (locRow?.conversion ?? 0).toFixed(1);
-  $("d_resp").textContent = String(Math.round(locRow?.response_ms ?? 0));
-  $("d_qt").textContent = String(Math.round(locRow?.quotes_recovered ?? 0));
+  $("d_upt").textContent = fmtNumOrDash(locRow?.uptime, 1);
+  $("d_conv").textContent = fmtNumOrDash(locRow?.conversion, 1);
+  $("d_resp").textContent = fmtIntOrDash(locRow?.response_ms);
+  $("d_qt").textContent = fmtIntOrDash(locRow?.quotes_recovered);
 
-  // Build sparklines for each metric
-  const upts = series.map(s=>Number(s.uptime||0));
-  const conv = series.map(s=>Number(s.conv||0));
-  const resp = series.map(s=>Number(s.resp||0));
+  const upts = series.map(s=>Number(s.uptime));
+  const conv = series.map(s=>Number(s.conv));
+  const resp = series.map(s=>Number(s.resp));
 
   $("sp_u").innerHTML = sparkline(upts, 0, 100, "#39d353");
-  $("sp_c").innerHTML = sparkline(conv, 0, Math.max(1, ...conv), "#7aa2ff");
-  // For response, lower is better — map to inverted scale for nicer line
-  const maxR = Math.max(1, ...resp);
-  const inv = resp.map(v => maxR - v);
+  $("sp_c").innerHTML = sparkline(conv, 0, Math.max(1, ...conv.filter(Number.isFinite)), "#7aa2ff");
+
+  const maxR = Math.max(1, ...resp.filter(Number.isFinite));
+  const inv = resp.filter(Number.isFinite).map(v => maxR - v);
   $("sp_r").innerHTML = sparkline(inv, 0, Math.max(1, ...inv), "#ffb224");
 
   const tbody = $("d_rows"); tbody.innerHTML = "";
@@ -349,18 +358,17 @@ function openDrawer(loc, data){
     const dt = r.ts ? new Date(r.ts) : null;
     tr.innerHTML = `
       <td>${dt?dt.toLocaleString():""}</td>
-      <td class="right">${r.uptime!==""?Number(r.uptime).toFixed(1):""}</td>
-      <td class="right">${r.conversion!==""?Number(r.conversion).toFixed(1):""}</td>
-      <td class="right">${r.response_ms!==""?Number(r.response_ms).toFixed(0):""}</td>
-      <td class="right">${r.quotes_recovered!==""?Number(r.quotes_recovered).toFixed(0):""}</td>
-      <td><span class="badge ${sevClass((r.integrity||'unknown').toLowerCase())}">${(r.integrity||'unknown').toLowerCase()}</span></td>
+      <td class="right">${fmtNumOrDash(r.uptime,1)}</td>
+      <td class="right">${fmtNumOrDash(r.conversion,1)}</td>
+      <td class="right">${fmtIntOrDash(r.response_ms)}</td>
+      <td class="right">${fmtIntOrDash(r.quotes_recovered)}</td>
+      <td><span class="badge ${sevClass((r.integrity||'unknown'))}">${(r.integrity||'unknown')}</span></td>
       <td class="mono">${r.run_id||""}</td>`;
     tbody.appendChild(tr);
   });
 }
 
 function closeDrawer(){ $("drawerBack").style.display = "none"; }
-
 $("d_close").addEventListener("click", closeDrawer);
 $("drawerBack").addEventListener("click", (e)=>{ if(e.target === $("drawerBack")) closeDrawer(); });
 
@@ -377,43 +385,40 @@ async function load() {
 
     lastData = data;
 
-    // Apply filters to locations
     const q = ($("q").value || "").trim().toLowerCase();
     const fInt = $("f_int").value;
     const staleMin = Number($("staleMin").value || 10);
     const onlyStale = $("onlyStale").checked;
 
     let locs = (data.locations || []).slice();
-
-    // Count stale before filters (for top card)
     const staleCount = locs.filter(l => isStale(l.last_seen, staleMin)).length;
 
     if (q) locs = locs.filter(l => (String(l.account||"")+" "+String(l.location||"")).toLowerCase().includes(q));
     if (fInt !== "all") locs = locs.filter(l => String(l.integrity||"unknown").toLowerCase() === fInt);
     if (onlyStale) locs = locs.filter(l => isStale(l.last_seen, staleMin));
 
-    const crit = locs.filter(l=>String(l.integrity||"unknown").toLowerCase()==='critical').length;
-    const deg  = locs.filter(l=>String(l.integrity||"unknown").toLowerCase()==='degraded').length;
-    const okc  = locs.filter(l=>String(l.integrity||"unknown").toLowerCase()==='ok').length;
+    const crit = locs.filter(l=>String(l.integrity||"").toLowerCase()==='critical').length;
+    const deg  = locs.filter(l=>String(l.integrity||"").toLowerCase()==='degraded').length;
+    const ok   = locs.filter(l=>String(l.integrity||"").toLowerCase()==='ok').length;
 
     $("c_locs").textContent = String(locs.length);
     $("c_crit").textContent = String(crit);
     $("c_deg").textContent  = String(deg);
-    $("c_opt").textContent  = String(okc); // keep id to avoid structural changes
+    $("c_ok").textContent   = String(ok);
     $("c_stale").textContent = String(staleCount);
 
     $("meta").textContent = `${(data.recent||[]).length} recent rows • ${staleMin}m stale threshold`;
 
-    // Render locations
     const holder = $("locs"); holder.innerHTML = "";
     locs.forEach(l => {
       const series = (data.series && data.series[l.location]) || [];
-      const upts = series.map(s=>Number(s.uptime||0));
-      const conv = series.map(s=>Number(s.conv||0));
-      const resp = series.map(s=>Number(s.resp||0));
-      const maxC = Math.max(1, ...conv);
-      const maxR = Math.max(1, ...resp);
-      const invR = resp.map(v => maxR - v);
+      const upts = series.map(s=>Number(s.uptime)).filter(Number.isFinite);
+      const conv = series.map(s=>Number(s.conv)).filter(Number.isFinite);
+      const resp = series.map(s=>Number(s.resp)).filter(Number.isFinite);
+
+      const maxC = Math.max(1, ...(conv.length?conv:[1]));
+      const maxR = Math.max(1, ...(resp.length?resp:[1]));
+      const invR = resp.map(v => maxR - v).filter(Number.isFinite);
 
       const stale = isStale(l.last_seen, staleMin);
 
@@ -430,29 +435,29 @@ async function load() {
           </div>
 
           <div class="right">
-            <div class="k">Uptime</div><div class="v">${Number(l.uptime||0).toFixed(1)}</div>
+            <div class="k">Uptime</div><div class="v">${fmtNumOrDash(l.uptime,1)}</div>
           </div>
           <div class="right">
-            <div class="k">Conv</div><div class="v">${Number(l.conversion||0).toFixed(1)}</div>
+            <div class="k">Conv</div><div class="v">${fmtNumOrDash(l.conversion,1)}</div>
           </div>
           <div class="right">
-            <div class="k">Resp</div><div class="v">${Number(l.response_ms||0).toFixed(0)}</div>
+            <div class="k">Resp</div><div class="v">${fmtIntOrDash(l.response_ms)}</div>
           </div>
           <div class="right">
-            <div class="k">Quotes</div><div class="v">${Number(l.quotes_recovered||0).toFixed(0)}</div>
+            <div class="k">Quotes</div><div class="v">${fmtIntOrDash(l.quotes_recovered)}</div>
           </div>
 
           <div class="sparks">
             <div class="sparkBox"><div class="sparkLabel">Upt</div>${sparkline(upts,0,100,"#39d353")}</div>
             <div class="sparkBox"><div class="sparkLabel">Conv</div>${sparkline(conv,0,maxC,"#7aa2ff")}</div>
-            <div class="sparkBox"><div class="sparkLabel">Resp</div>${sparkline(invR,0,Math.max(1,...invR),"#ffb224")}</div>
+            <div class="sparkBox"><div class="sparkLabel">Resp</div>${sparkline(invR,0,Math.max(1,...(invR.length?invR:[1])),"#ffb224")}</div>
           </div>
 
           <div class="right">
             ${
               stale
                 ? `<span class="badge b-stale">stale</span>`
-                : `<span class="badge ${sevClass(l.integrity)}">${String(l.integrity||'unknown').toLowerCase()}</span>`
+                : `<span class="badge ${sevClass(l.integrity)}">${(l.integrity||'unknown')}</span>`
             }
           </div>
         </div>
@@ -461,10 +466,8 @@ async function load() {
       holder.appendChild(block);
     });
 
-    // Recent table (with sort)
     let rows = (data.recent||[]).slice();
 
-    // Sort defaults: newest -> oldest (already)
     if (sortKey) {
       rows.sort((a,b)=>{
         const av = a[sortKey], bv = b[sortKey];
@@ -474,7 +477,6 @@ async function load() {
       });
     }
 
-    // Apply same filters to recent table (based on search + integrity)
     const q2 = q;
     const f2 = fInt;
     if (q2) rows = rows.filter(r => (String(r.account||"")+" "+String(r.location||"")).toLowerCase().includes(q2));
@@ -488,11 +490,11 @@ async function load() {
         <td>${dt?dt.toLocaleString():''}</td>
         <td>${r.account||''}</td>
         <td class="mono">${r.location||''}</td>
-        <td class="right">${r.uptime!==""?Number(r.uptime).toFixed(1):""}</td>
-        <td class="right">${r.conversion!==""?Number(r.conversion).toFixed(1):""}</td>
-        <td class="right">${r.response_ms!==""?Number(r.response_ms).toFixed(0):""}</td>
-        <td class="right">${r.quotes_recovered!==""?Number(r.quotes_recovered).toFixed(0):""}</td>
-        <td><span class="badge ${sevClass((r.integrity||'unknown').toLowerCase())}">${(r.integrity||'unknown').toLowerCase()}</span></td>
+        <td class="right">${fmtNumOrDash(r.uptime,1)}</td>
+        <td class="right">${fmtNumOrDash(r.conversion,1)}</td>
+        <td class="right">${fmtIntOrDash(r.response_ms)}</td>
+        <td class="right">${fmtIntOrDash(r.quotes_recovered)}</td>
+        <td><span class="badge ${sevClass((r.integrity||'unknown'))}">${(r.integrity||'unknown')}</span></td>
         <td class="mono">${r.run_id||''}</td>`;
       tbody.appendChild(tr);
     });
@@ -509,7 +511,6 @@ $("csv").addEventListener("click", ()=> {
   downloadCSV(rows);
 });
 
-// Sorting for recent table
 document.querySelectorAll(".sort").forEach(el=>{
   el.addEventListener("click", ()=>{
     const k = el.getAttribute("data-sort");
@@ -520,7 +521,6 @@ document.querySelectorAll(".sort").forEach(el=>{
   });
 });
 
-// live search triggers
 ["q","f_int","onlyStale","staleMin","lim"].forEach(id=>{
   $(id).addEventListener("change", ()=> load());
   if(id==="q") $(id).addEventListener("input", ()=> load());
