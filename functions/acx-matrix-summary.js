@@ -34,9 +34,42 @@ async function readJSON(store, key) {
   }
 }
 
+/**
+ * Robust numeric parsing (no new fields/tags; additive-only):
+ * - Handles numbers, numeric strings, "98%", "444 ms", "1,234", etc.
+ * - Returns fallback when no numeric signal exists.
+ */
 function toNum(x, fallback = 0) {
-  const n = Number(x);
+  if (x == null) return fallback;
+  if (typeof x === "number") return Number.isFinite(x) ? x : fallback;
+
+  const s = String(x).trim();
+  if (!s) return fallback;
+
+  // Extract the first numeric token (supports decimals and negatives).
+  // Examples:
+  // "98%" -> "98"
+  // "444 ms" -> "444"
+  // "1,234" -> "1,234" -> "1234"
+  // "3.3%" -> "3.3"
+  const m = s.match(/-?\d+(?:[.,]\d+)?/);
+  if (!m) return fallback;
+
+  const cleaned = m[0].replace(/,/g, "");
+  const n = Number(cleaned);
   return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * Backwards-compatible quotes key support (additive-only):
+ * Some events may use quotes_recove, others quotes_recovered.
+ * We read both without changing your schema.
+ */
+function getQuotesValue(ev) {
+  // Prefer canonical key if present
+  if (ev?.quotes_recovered != null) return ev.quotes_recovered;
+  if (ev?.quotes_recove != null) return ev.quotes_recove;
+  return null;
 }
 
 // Treat as "metrics/health" if it contains any non-zero numeric signal.
@@ -44,7 +77,7 @@ function hasMetrics(ev) {
   const u = toNum(ev?.uptime, null);
   const c = toNum(ev?.conversion, null);
   const r = toNum(ev?.response_ms, null);
-  const q = toNum(ev?.quotes_recovered, null);
+  const q = toNum(getQuotesValue(ev), null);
   return [u, c, r, q].some((v) => v !== null && v !== 0);
 }
 
@@ -140,7 +173,10 @@ async function enforceSession(req) {
   try {
     const res = await requireSession(req);
     if (res && typeof res === "object" && "ok" in res) {
-      if (!res.ok) return res.response || json({ ok: false, error: "Unauthorized" }, 401);
+      if (!res.ok)
+        return (
+          res.response || json({ ok: false, error: "Unauthorized" }, 401)
+        );
       return null;
     }
     return null; // session ok (throwing-style or truthy-style)
@@ -199,7 +235,7 @@ export default async (req) => {
 
       if (!locState.has(loc)) {
         locState.set(loc, {
-          latestAny: ev,       // events are newest-first
+          latestAny: ev, // events are newest-first
           latestMetrics: null, // fill once with newest metrics event
         });
       }
@@ -222,7 +258,7 @@ export default async (req) => {
         uptime: toNum(met?.uptime),
         conversion: toNum(met?.conversion),
         response_ms: toNum(met?.response_ms),
-        quotes_recovered: toNum(met?.quotes_recovered),
+        quotes_recovered: toNum(getQuotesValue(met)),
         integrity: getIntegrity(any),
       };
     });
@@ -241,7 +277,7 @@ export default async (req) => {
         uptime: toNum(ev.uptime),
         conv: toNum(ev.conversion),
         resp: toNum(ev.response_ms),
-        quotes: toNum(ev.quotes_recovered),
+        quotes: toNum(getQuotesValue(ev)),
         integrity: getIntegrity(ev),
       });
     }
@@ -337,7 +373,9 @@ export default async (req) => {
     const avgResponseMs = responseTimeCount
       ? Math.round(responseTimeSumMs / responseTimeCount)
       : null;
-    const recoveryRate = stalledContacts ? recoveredContacts / stalledContacts : null;
+    const recoveryRate = stalledContacts
+      ? recoveredContacts / stalledContacts
+      : null;
 
     return json({
       ok: true,
