@@ -34,22 +34,8 @@ async function readJSON(store, key) {
   }
 }
 
-function toNum(x, fallback = 0) {
-  const n = Number(x);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-// --------- robust payload access (GHL wraps data in multiple ways) ----------
-function pickFirst(obj, keys) {
-  for (const k of keys) {
-    const v = obj?.[k];
-    if (v !== undefined && v !== null && v !== "") return v;
-  }
-  return null;
-}
-
+// ---------- robust payload access (GHL wraps data in multiple ways) ----------
 function getAny(e, key) {
-  // common wrappers: data, customData, custom_data, payload
   return (
     (e && e[key] !== undefined ? e[key] : undefined) ??
     (e?.data && e.data[key] !== undefined ? e.data[key] : undefined) ??
@@ -68,24 +54,29 @@ function getStr(e, key, fallback = "") {
   return fallback;
 }
 
-function getNum(e, key, fallback = null) {
+function getNumOrNull(e, key) {
   const v = getAny(e, key);
+  if (v === null || v === undefined || v === "") return null;
   const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function toNum(x, fallback = 0) {
+  const n = Number(x);
   return Number.isFinite(n) ? n : fallback;
 }
 
 // Treat as "metrics/health" if it contains any non-zero numeric signal.
-// IMPORTANT: read from ANY wrapper, not only top-level.
+// IMPORTANT: do NOT treat missing metrics as zeros.
 function hasMetrics(ev) {
-  const u = getNum(ev, "uptime", null);
-  const c = getNum(ev, "conversion", null);
-  const r = getNum(ev, "response_ms", null);
-  const q = getNum(ev, "quotes_recovered", null);
+  const u = getNumOrNull(ev, "uptime");
+  const c = getNumOrNull(ev, "conversion");
+  const r = getNumOrNull(ev, "response_ms");
+  const q = getNumOrNull(ev, "quotes_recovered");
   return [u, c, r, q].some((v) => v !== null && v !== 0);
 }
 
 // Workflow/telemetry events: keep them from overwriting the tiles.
-// IMPORTANT: detect in wrappers too.
 function isWorkflowEvent(ev) {
   const flags = [
     getAny(ev, "event_name"),
@@ -99,8 +90,8 @@ function isWorkflowEvent(ev) {
 }
 
 // Integrity normalization:
-// Allowed UI: ok / degraded / critical / unknown
-// Map older/alt inputs: optimal -> ok
+// Allowed: ok / degraded / critical / unknown
+// Map: optimal -> ok
 function getIntegrity(ev) {
   const raw = String(
     getAny(ev, "acx_integrity") ?? getAny(ev, "integrity") ?? "unknown"
@@ -113,8 +104,7 @@ function getIntegrity(ev) {
   return "unknown";
 }
 
-// Normalize location so you never get "[object Object]"
-// IMPORTANT: read wrappers + object forms
+// Location normalization: never show [object Object]
 function getLocationValue(ev) {
   const v =
     getAny(ev, "location") ??
@@ -135,7 +125,6 @@ function getLocationValue(ev) {
 }
 
 function getAccountValue(ev) {
-  // support "account" or "account_name" variants
   const v =
     getAny(ev, "account") ??
     getAny(ev, "account_name") ??
@@ -177,7 +166,6 @@ function dedupeKeepOrder(arr) {
   return out;
 }
 
-// Sort by event key timestamp if it matches "event:<ms>:<rand>"
 function sortEventKeysAscending(keys) {
   const parse = (k) => {
     const m = /^event:(\d+):/.exec(k);
@@ -248,8 +236,8 @@ export default async (req) => {
     }
 
     // Locations summary:
-    // - last_seen + integrity come from newest event of ANY type
-    // - metrics come from newest METRICS event (so workflow events can't zero tiles)
+    // - last_seen + integrity: newest event of ANY type
+    // - metrics tiles: newest METRICS event ONLY (workflow events cannot zero tiles)
     const locState = new Map();
 
     for (const ev of events) {
@@ -258,13 +246,12 @@ export default async (req) => {
 
       if (!locState.has(loc)) {
         locState.set(loc, {
-          latestAny: ev,       // events are newest-first
-          latestMetrics: null, // first metrics event encountered (newest) wins
+          latestAny: ev,
+          latestMetrics: null,
         });
       }
 
       const st = locState.get(loc);
-
       if (!st.latestMetrics && hasMetrics(ev) && !isWorkflowEvent(ev)) {
         st.latestMetrics = ev;
       }
@@ -274,14 +261,19 @@ export default async (req) => {
       const any = st.latestAny;
       const met = st.latestMetrics;
 
+      const u = met ? getNumOrNull(met, "uptime") : null;
+      const c = met ? getNumOrNull(met, "conversion") : null;
+      const r = met ? getNumOrNull(met, "response_ms") : null;
+      const q = met ? getNumOrNull(met, "quotes_recovered") : null;
+
       return {
         location: String(loc),
         account: String((getAccountValue(met) || getAccountValue(any) || "") || ""),
         last_seen: String(getStr(any, "ts", "")),
-        uptime: toNum(getNum(met, "uptime", 0)),
-        conversion: toNum(getNum(met, "conversion", 0)),
-        response_ms: toNum(getNum(met, "response_ms", 0)),
-        quotes_recovered: toNum(getNum(met, "quotes_recovered", 0)),
+        uptime: u == null ? 0 : toNum(u),
+        conversion: c == null ? 0 : toNum(c),
+        response_ms: r == null ? 0 : toNum(r),
+        quotes_recovered: q == null ? 0 : toNum(q),
         integrity: getIntegrity(any),
       };
     });
@@ -297,10 +289,10 @@ export default async (req) => {
       if (!series[loc]) series[loc] = [];
       series[loc].push({
         ts: getStr(ev, "ts", ""),
-        uptime: toNum(getNum(ev, "uptime", 0)),
-        conv: toNum(getNum(ev, "conversion", 0)),
-        resp: toNum(getNum(ev, "response_ms", 0)),
-        quotes: toNum(getNum(ev, "quotes_recovered", 0)),
+        uptime: toNum(getNumOrNull(ev, "uptime") ?? 0),
+        conv: toNum(getNumOrNull(ev, "conversion") ?? 0),
+        resp: toNum(getNumOrNull(ev, "response_ms") ?? 0),
+        quotes: toNum(getNumOrNull(ev, "quotes_recovered") ?? 0),
         integrity: getIntegrity(ev),
       });
     }
@@ -398,19 +390,30 @@ export default async (req) => {
       : null;
     const recoveryRate = stalledContacts ? recoveredContacts / stalledContacts : null;
 
-    return json({
-      ok: true,
-      recent: events.map((e) => ({
+    // IMPORTANT: recent rows should NOT show fake 0.0 when metric fields are missing.
+    // Return "" when missing so your existing HTML renders blanks.
+    const recent = events.map((e) => {
+      const u = getNumOrNull(e, "uptime");
+      const c = getNumOrNull(e, "conversion");
+      const r = getNumOrNull(e, "response_ms");
+      const q = getNumOrNull(e, "quotes_recovered");
+
+      return {
         ts: getStr(e, "ts", ""),
         account: getAccountValue(e),
         location: getLocationValue(e),
-        uptime: toNum(getNum(e, "uptime", 0)),
-        conversion: toNum(getNum(e, "conversion", 0)),
-        response_ms: toNum(getNum(e, "response_ms", 0)),
-        quotes_recovered: toNum(getNum(e, "quotes_recovered", 0)),
+        uptime: u == null ? "" : u,
+        conversion: c == null ? "" : c,
+        response_ms: r == null ? "" : r,
+        quotes_recovered: q == null ? "" : q,
         integrity: getIntegrity(e),
         run_id: getStr(e, "run_id", ""),
-      })),
+      };
+    });
+
+    return json({
+      ok: true,
+      recent,
       locations,
       series,
       meta: {
