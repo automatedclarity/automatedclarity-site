@@ -6,7 +6,7 @@
 //    - "optimal" is normalized to "ok"
 //    - blank/unknown is treated as "missing" (does not overwrite existing summary)
 // 2) Metrics overwrite protection:
-//    - Only requests with header: x-acx-source: ingest
+//    - Only requests with header: x-acx-source: ingest  (or ingest_form)
 //      are allowed to WRITE metrics into per-location summary
 //    - Non-ingest events still store event rows, but do NOT clobber summary metrics
 // 3) Key normalization:
@@ -195,8 +195,8 @@ export default async (req) => {
 
   const source = getSource(req, body);
 
-  // Metrics overwrite protection: ONLY ingest can write summary metrics
-  const allowMetricWrite = source === "ingest";
+  // Metrics overwrite protection: allow ingest + ingest_form to write summary metrics
+  const allowMetricWrite = source === "ingest" || source === "ingest_form";
 
   // Parse metrics (do NOT default to 0; null means "missing")
   const uptimeIn = parseNumber(pick(body, ["uptime"]));
@@ -213,8 +213,7 @@ export default async (req) => {
 
   // telemetry extras (optional)
   const run_id =
-    asString(pick(body, ["run_id", "runId"]) || "").trim() ||
-    `run-${Date.now()}`;
+    asString(pick(body, ["run_id", "runId"]) || "").trim() || `run-${Date.now()}`;
 
   const event_name = asString(pick(body, ["event_name", "acx_event"]) || "")
     .trim()
@@ -237,9 +236,7 @@ export default async (req) => {
     .toString();
 
   // ---- store event row ----
-  const eventKey = `event:${Date.now()}:${Math.random()
-    .toString(36)
-    .slice(2, 10)}`;
+  const eventKey = `event:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
 
   // For event rows:
   // - store metrics as numbers or 0 (so the event row is always numeric)
@@ -258,7 +255,7 @@ export default async (req) => {
     acx_integrity: integrityNorm || "unknown",
 
     run_id,
-    source, // now includes "ingest" when header is present
+    source, // includes "ingest" / "ingest_form" when header is present
 
     // optional telemetry
     event_name,
@@ -296,8 +293,8 @@ export default async (req) => {
     const finalIntegrity = integrityNorm || prevIntegrity || "";
 
     // Metrics preservation + overwrite shield:
-    // - only ingest can write metrics
-    // - even ingest only overwrites when value is present (non-null)
+    // - only ingest / ingest_form can write metrics
+    // - even then only overwrites when value is present (non-null)
     const finalUptime = allowMetricWrite
       ? uptimeIn ?? prevSummary.uptime ?? 0
       : prevSummary.uptime ?? 0;
