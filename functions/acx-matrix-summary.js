@@ -34,91 +34,115 @@ async function readJSON(store, key) {
   }
 }
 
-/**
- * Robust numeric parsing:
- * - Handles numbers, numeric strings, "98%", "444 ms", "1,234", etc.
- */
 function toNum(x, fallback = 0) {
-  if (x == null) return fallback;
-  if (typeof x === "number") return Number.isFinite(x) ? x : fallback;
-
-  const s = String(x).trim();
-  if (!s) return fallback;
-
-  const m = s.match(/-?\d+(?:[.,]\d+)?/);
-  if (!m) return fallback;
-
-  const cleaned = m[0].replace(/,/g, "");
-  const n = Number(cleaned);
+  const n = Number(x);
   return Number.isFinite(n) ? n : fallback;
 }
 
-/**
- * Backwards-compatible quotes key support:
- * - Accepts quotes_recovered (canonical) and quotes_recove (legacy)
- */
-function getQuotesValue(ev) {
-  if (ev?.quotes_recovered != null) return ev.quotes_recovered;
-  if (ev?.quotes_recove != null) return ev.quotes_recove;
+// --------- robust payload access (GHL wraps data in multiple ways) ----------
+function pickFirst(obj, keys) {
+  for (const k of keys) {
+    const v = obj?.[k];
+    if (v !== undefined && v !== null && v !== "") return v;
+  }
   return null;
 }
 
-// Treat as "metrics/health" if it contains any non-zero numeric signal.
-function hasMetrics(ev) {
-  const u = toNum(ev?.uptime, null);
-  const c = toNum(ev?.conversion, null);
-  const r = toNum(ev?.response_ms, null);
-  const q = toNum(getQuotesValue(ev), null);
-  return [u, c, r, q].some((v) => v !== null && v !== 0);
-}
-
-// includes Phase 2 telemetry keys so WF3/handled don't overwrite tiles
-function isWorkflowEvent(ev) {
-  return !!(
-    ev?.event_name ||
-    ev?.stage ||
-    ev?.priority ||
-    ev?.acx_event ||
-    ev?.acx_stage ||
-    ev?.acx_status
+function getAny(e, key) {
+  // common wrappers: data, customData, custom_data, payload
+  return (
+    (e && e[key] !== undefined ? e[key] : undefined) ??
+    (e?.data && e.data[key] !== undefined ? e.data[key] : undefined) ??
+    (e?.customData && e.customData[key] !== undefined ? e.customData[key] : undefined) ??
+    (e?.custom_data && e.custom_data[key] !== undefined ? e.custom_data[key] : undefined) ??
+    (e?.payload && e.payload[key] !== undefined ? e.payload[key] : undefined) ??
+    null
   );
 }
 
-/**
- * Normalize integrity to ONLY:
- * - ok
- * - degraded
- * - critical
- * - unknown (fallback)
- *
- * Also maps legacy aliases (e.g., "optimal" -> "ok").
- */
+function getStr(e, key, fallback = "") {
+  const v = getAny(e, key);
+  if (v === null || v === undefined) return fallback;
+  if (typeof v === "string") return v;
+  if (typeof v === "number") return String(v);
+  return fallback;
+}
+
+function getNum(e, key, fallback = null) {
+  const v = getAny(e, key);
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+// Treat as "metrics/health" if it contains any non-zero numeric signal.
+// IMPORTANT: read from ANY wrapper, not only top-level.
+function hasMetrics(ev) {
+  const u = getNum(ev, "uptime", null);
+  const c = getNum(ev, "conversion", null);
+  const r = getNum(ev, "response_ms", null);
+  const q = getNum(ev, "quotes_recovered", null);
+  return [u, c, r, q].some((v) => v !== null && v !== 0);
+}
+
+// Workflow/telemetry events: keep them from overwriting the tiles.
+// IMPORTANT: detect in wrappers too.
+function isWorkflowEvent(ev) {
+  const flags = [
+    getAny(ev, "event_name"),
+    getAny(ev, "stage"),
+    getAny(ev, "priority"),
+    getAny(ev, "acx_event"),
+    getAny(ev, "acx_stage"),
+    getAny(ev, "acx_status"),
+  ];
+  return flags.some((v) => v !== null && v !== undefined && v !== "");
+}
+
+// Integrity normalization:
+// Allowed UI: ok / degraded / critical / unknown
+// Map older/alt inputs: optimal -> ok
 function getIntegrity(ev) {
-  const raw = String(ev?.acx_integrity || ev?.integrity || "unknown")
+  const raw = String(
+    getAny(ev, "acx_integrity") ?? getAny(ev, "integrity") ?? "unknown"
+  )
     .toLowerCase()
     .trim();
 
-  // Aliases → allowed set
   if (raw === "optimal") return "ok";
-  if (raw === "green") return "ok";
-  if (raw === "warn" || raw === "warning") return "degraded";
-  if (raw === "red") return "critical";
-
   if (raw === "ok" || raw === "degraded" || raw === "critical") return raw;
   return "unknown";
 }
 
 // Normalize location so you never get "[object Object]"
+// IMPORTANT: read wrappers + object forms
 function getLocationValue(ev) {
-  const v = ev?.location;
+  const v =
+    getAny(ev, "location") ??
+    getAny(ev, "location_id") ??
+    getAny(ev, "locationId") ??
+    null;
+
   if (!v) return "";
   if (typeof v === "string") return v;
   if (typeof v === "number") return String(v);
   if (typeof v === "object") {
     if (v.id) return String(v.id);
     if (v.locationId) return String(v.locationId);
+    if (v.location_id) return String(v.location_id);
     return "";
   }
+  return "";
+}
+
+function getAccountValue(ev) {
+  // support "account" or "account_name" variants
+  const v =
+    getAny(ev, "account") ??
+    getAny(ev, "account_name") ??
+    getAny(ev, "accountName") ??
+    "";
+  if (typeof v === "string") return v;
+  if (typeof v === "number") return String(v);
   return "";
 }
 
@@ -132,18 +156,12 @@ function toMs(v) {
 
 function getContactId(e) {
   return (
-    e?.contact_id ||
-    e?.contactId ||
+    getAny(e, "contact_id") ||
+    getAny(e, "contactId") ||
     e?.contact?.id ||
-    e?.data?.contact_id ||
-    e?.data?.contactId ||
     e?.data?.contact?.id ||
     null
   );
-}
-
-function getField(e, key) {
-  return e?.[key] ?? e?.data?.[key] ?? null;
 }
 
 function dedupeKeepOrder(arr) {
@@ -181,12 +199,10 @@ async function enforceSession(req) {
     const res = await requireSession(req);
     if (res && typeof res === "object" && "ok" in res) {
       if (!res.ok)
-        return (
-          res.response || json({ ok: false, error: "Unauthorized" }, 401)
-        );
+        return res.response || json({ ok: false, error: "Unauthorized" }, 401);
       return null;
     }
-    return null; // session ok (throwing-style or truthy-style)
+    return null;
   } catch {
     return json({ ok: false, error: "Unauthorized" }, 401);
   }
@@ -197,7 +213,7 @@ export default async (req) => {
     if (req.method !== "GET")
       return json({ ok: false, error: "Method Not Allowed" }, 405);
 
-    // ✅ KEEP LOGIN (session cookie)
+    // KEEP LOGIN/session cookie
     const deny = await enforceSession(req);
     if (deny) return deny;
 
@@ -210,7 +226,7 @@ export default async (req) => {
     const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
     const store = getStore({ name: storeName });
 
-    // ✅ ALWAYS MERGE BOTH INDEXES
+    // Merge both indexes
     const idxEventsRaw = await readJSON(store, "index:events");
     const idxGlobalRaw = await readJSON(store, "index:global");
 
@@ -242,8 +258,8 @@ export default async (req) => {
 
       if (!locState.has(loc)) {
         locState.set(loc, {
-          latestAny: ev, // events are newest-first
-          latestMetrics: null, // fill once with newest metrics event
+          latestAny: ev,       // events are newest-first
+          latestMetrics: null, // first metrics event encountered (newest) wins
         });
       }
 
@@ -260,12 +276,12 @@ export default async (req) => {
 
       return {
         location: String(loc),
-        account: String((met?.account || any?.account || "") || ""),
-        last_seen: String(any?.ts || ""),
-        uptime: toNum(met?.uptime),
-        conversion: toNum(met?.conversion),
-        response_ms: toNum(met?.response_ms),
-        quotes_recovered: toNum(getQuotesValue(met)),
+        account: String((getAccountValue(met) || getAccountValue(any) || "") || ""),
+        last_seen: String(getStr(any, "ts", "")),
+        uptime: toNum(getNum(met, "uptime", 0)),
+        conversion: toNum(getNum(met, "conversion", 0)),
+        response_ms: toNum(getNum(met, "response_ms", 0)),
+        quotes_recovered: toNum(getNum(met, "quotes_recovered", 0)),
         integrity: getIntegrity(any),
       };
     });
@@ -280,11 +296,11 @@ export default async (req) => {
 
       if (!series[loc]) series[loc] = [];
       series[loc].push({
-        ts: ev.ts,
-        uptime: toNum(ev.uptime),
-        conv: toNum(ev.conversion),
-        resp: toNum(ev.response_ms),
-        quotes: toNum(getQuotesValue(ev)),
+        ts: getStr(ev, "ts", ""),
+        uptime: toNum(getNum(ev, "uptime", 0)),
+        conv: toNum(getNum(ev, "conversion", 0)),
+        resp: toNum(getNum(ev, "response_ms", 0)),
+        quotes: toNum(getNum(ev, "quotes_recovered", 0)),
         integrity: getIntegrity(ev),
       });
     }
@@ -295,9 +311,9 @@ export default async (req) => {
     const handledEvents = [];
 
     for (const e of events) {
-      const acx_event = getField(e, "acx_event");
-      const acx_stage = getField(e, "acx_stage");
-      const acx_status = getField(e, "acx_status");
+      const acx_event = getStr(e, "acx_event", "");
+      const acx_stage = getStr(e, "acx_stage", "");
+      const acx_status = getStr(e, "acx_status", "");
 
       if (
         acx_event === "wf3_enforcement" &&
@@ -321,13 +337,13 @@ export default async (req) => {
       const cid = getContactId(e);
       if (!cid) continue;
 
-      const stage = getField(e, "acx_stage");
+      const stage = getStr(e, "acx_stage", "");
       if (stalledByStage[stage]) stalledByStage[stage].add(cid);
 
       const t =
-        toMs(getField(e, "ts")) ||
-        toMs(getField(e, "created_at")) ||
-        toMs(getField(e, "time")) ||
+        toMs(getAny(e, "ts")) ||
+        toMs(getAny(e, "created_at")) ||
+        toMs(getAny(e, "time")) ||
         toMs(e?.createdAt) ||
         toMs(e?.timestamp) ||
         null;
@@ -344,9 +360,9 @@ export default async (req) => {
       if (!cid) continue;
 
       const t =
-        toMs(getField(e, "ts")) ||
-        toMs(getField(e, "created_at")) ||
-        toMs(getField(e, "time")) ||
+        toMs(getAny(e, "ts")) ||
+        toMs(getAny(e, "created_at")) ||
+        toMs(getAny(e, "time")) ||
         toMs(e?.createdAt) ||
         toMs(e?.timestamp) ||
         null;
@@ -380,23 +396,21 @@ export default async (req) => {
     const avgResponseMs = responseTimeCount
       ? Math.round(responseTimeSumMs / responseTimeCount)
       : null;
-    const recoveryRate = stalledContacts
-      ? recoveredContacts / stalledContacts
-      : null;
-
-    // ✅ Normalize integrity for *recent* so UI never shows "optimal"
-    const recent = events.map((e) => {
-      const integ = getIntegrity(e);
-      return {
-        ...e,
-        integrity: integ,
-        acx_integrity: integ,
-      };
-    });
+    const recoveryRate = stalledContacts ? recoveredContacts / stalledContacts : null;
 
     return json({
       ok: true,
-      recent,
+      recent: events.map((e) => ({
+        ts: getStr(e, "ts", ""),
+        account: getAccountValue(e),
+        location: getLocationValue(e),
+        uptime: toNum(getNum(e, "uptime", 0)),
+        conversion: toNum(getNum(e, "conversion", 0)),
+        response_ms: toNum(getNum(e, "response_ms", 0)),
+        quotes_recovered: toNum(getNum(e, "quotes_recovered", 0)),
+        integrity: getIntegrity(e),
+        run_id: getStr(e, "run_id", ""),
+      })),
       locations,
       series,
       meta: {
