@@ -1,6 +1,8 @@
 // functions/acx-matrix-ingest-form.js
-// Deterministic browser-safe ingest relay
-// Single responsibility: validate session -> forward JSON -> return upstream result
+// Browser-safe ingest relay:
+// - Requires cookie session (same auth model as /matrix)
+// - Forwards to acx-matrix-webhook with x-acx-secret server-side
+// - Keeps schema locked to: account, location, run_id, acx_integrity, uptime, response_ms, conversion, quotes_recovered
 
 import { requireSession } from "./_lib/session.js";
 
@@ -13,73 +15,141 @@ const json = (obj, status = 200) =>
     },
   });
 
-export default async (req) => {
-  // ✅ Only POST
-  if (req.method !== "POST") {
-    return json({ ok: false, error: "POST required" }, 405);
-  }
-
-  // ✅ Require session cookie
+async function enforceSession(req) {
   try {
-    await requireSession(req);
+    const res = await requireSession(req);
+
+    // supports both patterns:
+    // - requireSession throws on fail
+    // - OR returns { ok, response }
+    if (res && typeof res === "object" && "ok" in res) {
+      if (res.ok) return null;
+      return res.response || json({ ok: false, error: "Unauthorized" }, 401);
+    }
+
+    // if it returned a Response directly, pass it through
+    if (res instanceof Response) return res;
+
+    return null; // session ok
   } catch {
     return json({ ok: false, error: "Unauthorized" }, 401);
   }
+}
 
-  // ✅ Parse JSON body
-  let body;
+function pick(obj, keys) {
+  for (const k of keys) {
+    const v = obj?.[k];
+    if (v !== undefined && v !== null && String(v).trim() !== "") return v;
+  }
+  return "";
+}
+
+function toStringSafe(v) {
+  if (v === undefined || v === null) return "";
+  return String(v).trim();
+}
+
+export default async (req) => {
+  if (req.method !== "POST")
+    return json({ ok: false, error: "Method Not Allowed" }, 405);
+
+  const deny = await enforceSession(req);
+  if (deny) return deny;
+
+  let body = {};
   try {
     body = await req.json();
   } catch {
     return json({ ok: false, error: "Invalid JSON body" }, 400);
   }
 
-  // ✅ Minimal validation (only required fields)
-  const account = String(body.account || "").trim();
-  const location = String(body.location || "").trim();
+  // Accept multiple client naming styles so we DON'T drift later.
+  const account = toStringSafe(
+    pick(body, ["account", "account_name", "accountName", "AccountName"])
+  );
+
+  const location = toStringSafe(
+    pick(body, ["location", "location_id", "locationId", "Location", "LocationId"])
+  );
+
+  const run_id =
+    toStringSafe(
+      pick(body, ["run_id", "runId", "test_run_id", "testRunId", "TestRunID"])
+    ) || `run_INGEST_FORM_${Date.now()}`;
+
+  const acx_integrity = toStringSafe(
+    pick(body, [
+      "acx_integrity",
+      "integrity",
+      "integrity_status",
+      "integrityStatus",
+    ])
+  );
+
+  const uptime = toStringSafe(pick(body, ["uptime", "uptime_pct", "uptimePct"]));
+  const response_ms = toStringSafe(
+    pick(body, ["response_ms", "responseMs", "response"])
+  );
+  const conversion = toStringSafe(pick(body, ["conversion", "conv", "Conv"]));
+  const quotes_recovered = toStringSafe(
+    pick(body, ["quotes_recovered", "quotesRecovered", "quotes", "QuotesRecovered"])
+  );
 
   if (!account || !location) {
-    return json({ ok: false, error: "Missing account or location" }, 400);
+    return json(
+      { ok: false, error: "Missing required fields: account, location" },
+      400
+    );
   }
-
-  // ✅ Use exact same payload structure curl uses
-  const payload = {
-    account,
-    location,
-    run_id: body.run_id || `run_FORM_${Date.now()}`,
-    acx_integrity: body.acx_integrity || "",
-    uptime: body.uptime || "",
-    response_ms: body.response_ms || "",
-    conversion: body.conversion || "",
-    quotes_recovered: body.quotes_recovered || "",
-  };
 
   const secret =
     process.env.ACX_SECRET ||
     process.env.ACX_WEBHOOK_SECRET ||
+    process.env.ACX_MATRIX_SECRET ||
+    process.env.ACX_SHARED_SECRET ||
     process.env.X_ACX_SECRET;
 
   if (!secret) {
-    return json({ ok: false, error: "Missing ACX secret" }, 500);
+    return json({ ok: false, error: "Server missing ACX secret env var" }, 500);
   }
 
-  // ✅ Always forward to webhook (single source of truth)
-  const forwardUrl = new URL(req.url).origin +
-    "/.netlify/functions/acx-matrix-webhook";
+  const origin = new URL(req.url).origin;
 
-  const upstream = await fetch(forwardUrl, {
+  // Forward to your existing writer (single source of truth)
+  const forwardUrl = `${origin}/.netlify/functions/acx-matrix-webhook`;
+
+  // ✅ Send BOTH keys to prevent any downstream preference / drift
+  const payload = {
+    account,
+    location,
+    run_id,
+    acx_integrity,
+    integrity: acx_integrity,
+    uptime,
+    response_ms,
+    conversion,
+    quotes_recovered,
+  };
+
+  const r = await fetch(forwardUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "x-acx-secret": secret,
+      "x-acx-source": "ingest_form",
     },
     body: JSON.stringify(payload),
   });
 
-  const text = await upstream.text();
+  const text = await r.text();
 
-  return new Response(text, {
-    status: upstream.status,
-    headers: { "Content-Type": "application/json" },
-  });
+  // try to pass JSON through if possible
+  try {
+    return json({ ok: true, forwarded: true, upstream: JSON.parse(text) }, r.status);
+  } catch {
+    return new Response(text, {
+      status: r.status,
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
 };
