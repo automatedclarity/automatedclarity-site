@@ -1,83 +1,85 @@
 // functions/acx-matrix-ingest-form.js
-// Browser ingest form -> server-side forwarder (no secrets in client)
-// - Requires session cookie (same auth model as /matrix)
-// - Forwards payload to acx-matrix-webhook with x-acx-secret + x-acx-source: ingest
-// - Ensures integrity enum only: ok | degraded | critical (else -> unknown)
+// Deterministic browser-safe ingest relay
+// Single responsibility: validate session -> forward JSON -> return upstream result
 
 import { requireSession } from "./_lib/session.js";
 
-const json = (status, obj) =>
+const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
     status,
     headers: {
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
-      "Access-Control-Allow-Origin": "*",
     },
   });
 
-const normIntegrity = (v) => {
-  const s = String(v || "").trim().toLowerCase();
-  if (s === "ok") return "ok";
-  if (s === "degraded") return "degraded";
-  if (s === "critical") return "critical";
-  return "unknown";
-};
-
 export default async (req) => {
-  if (req.method === "OPTIONS") return json(200, { ok: true });
-  if (req.method !== "POST")
-    return json(405, { ok: false, error: "Method Not Allowed" });
+  // ✅ Only POST
+  if (req.method !== "POST") {
+    return json({ ok: false, error: "POST required" }, 405);
+  }
 
-  // cookie session only
+  // ✅ Require session cookie
   try {
     await requireSession(req);
   } catch {
-    return json(401, { ok: false, error: "Unauthorized" });
+    return json({ ok: false, error: "Unauthorized" }, 401);
   }
 
-  const secret = process.env.ACX_SECRET || "";
-  if (!secret) return json(500, { ok: false, error: "Server missing ACX_SECRET" });
-
-  let body = {};
+  // ✅ Parse JSON body
+  let body;
   try {
     body = await req.json();
   } catch {
-    body = {};
+    return json({ ok: false, error: "Invalid JSON body" }, 400);
   }
 
-  // normalize integrity to locked enum
-  if ("acx_integrity" in body) body.acx_integrity = normIntegrity(body.acx_integrity);
-  if ("integrity" in body) body.integrity = normIntegrity(body.integrity);
+  // ✅ Minimal validation (only required fields)
+  const account = String(body.account || "").trim();
+  const location = String(body.location || "").trim();
 
-  // build absolute URL to webhook (works on Netlify)
-  const base =
-    process.env.URL ||
-    (req.headers.get("x-forwarded-proto") && req.headers.get("host")
-      ? `${req.headers.get("x-forwarded-proto")}://${req.headers.get("host")}`
-      : "");
+  if (!account || !location) {
+    return json({ ok: false, error: "Missing account or location" }, 400);
+  }
 
-  if (!base) return json(500, { ok: false, error: "Unable to resolve base URL" });
+  // ✅ Use exact same payload structure curl uses
+  const payload = {
+    account,
+    location,
+    run_id: body.run_id || `run_FORM_${Date.now()}`,
+    acx_integrity: body.acx_integrity || "",
+    uptime: body.uptime || "",
+    response_ms: body.response_ms || "",
+    conversion: body.conversion || "",
+    quotes_recovered: body.quotes_recovered || "",
+  };
 
-  const forwardUrl = `${base}/.netlify/functions/acx-matrix-webhook`;
+  const secret =
+    process.env.ACX_SECRET ||
+    process.env.ACX_WEBHOOK_SECRET ||
+    process.env.X_ACX_SECRET;
 
-  const r = await fetch(forwardUrl, {
+  if (!secret) {
+    return json({ ok: false, error: "Missing ACX secret" }, 500);
+  }
+
+  // ✅ Always forward to webhook (single source of truth)
+  const forwardUrl = new URL(req.url).origin +
+    "/.netlify/functions/acx-matrix-webhook";
+
+  const upstream = await fetch(forwardUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "x-acx-secret": secret,
-      "x-acx-source": "ingest",
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(payload),
   });
 
-  const text = await r.text();
-  let out = null;
-  try {
-    out = JSON.parse(text);
-  } catch {
-    out = { raw: text };
-  }
+  const text = await upstream.text();
 
-  return json(r.status, out);
+  return new Response(text, {
+    status: upstream.status,
+    headers: { "Content-Type": "application/json" },
+  });
 };
