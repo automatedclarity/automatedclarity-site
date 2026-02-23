@@ -384,9 +384,19 @@ export default async (req) => {
       ? recoveredContacts / stalledContacts
       : null;
 
+    // ✅ Normalize integrity for *recent* so UI never shows "optimal"
+    const recent = events.map((e) => {
+      const integ = getIntegrity(e);
+      return {
+        ...e,
+        integrity: integ,
+        acx_integrity: integ,
+      };
+    });
+
     return json({
       ok: true,
-      recent: events,
+      recent,
       locations,
       series,
       meta: {
