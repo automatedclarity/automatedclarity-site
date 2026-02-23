@@ -2,7 +2,7 @@
 // Browser-safe ingest relay:
 // - Requires cookie session (same auth model as /matrix)
 // - Forwards to acx-matrix-webhook with x-acx-secret server-side
-// - Keeps schema locked to: account, location, run_id, acx_integrity, uptime, response_ms, conversion, quotes_recovered
+// - Sends x-acx-source in a way that ALWAYS allows metric overwrite
 
 import { requireSession } from "./_lib/session.js";
 
@@ -50,8 +50,9 @@ function toStringSafe(v) {
 }
 
 export default async (req) => {
-  if (req.method !== "POST")
+  if (req.method !== "POST") {
     return json({ ok: false, error: "Method Not Allowed" }, 405);
+  }
 
   const deny = await enforceSession(req);
   if (deny) return deny;
@@ -63,7 +64,6 @@ export default async (req) => {
     return json({ ok: false, error: "Invalid JSON body" }, 400);
   }
 
-  // Accept multiple client naming styles so we DON'T drift later.
   const account = toStringSafe(
     pick(body, ["account", "account_name", "accountName", "AccountName"])
   );
@@ -78,12 +78,7 @@ export default async (req) => {
     ) || `run_INGEST_FORM_${Date.now()}`;
 
   const acx_integrity = toStringSafe(
-    pick(body, [
-      "acx_integrity",
-      "integrity",
-      "integrity_status",
-      "integrityStatus",
-    ])
+    pick(body, ["acx_integrity", "integrity", "integrity_status", "integrityStatus"])
   );
 
   const uptime = toStringSafe(pick(body, ["uptime", "uptime_pct", "uptimePct"]));
@@ -114,17 +109,14 @@ export default async (req) => {
   }
 
   const origin = new URL(req.url).origin;
-
-  // Forward to your existing writer (single source of truth)
   const forwardUrl = `${origin}/.netlify/functions/acx-matrix-webhook`;
 
-  // ✅ Send BOTH keys to prevent any downstream preference / drift
   const payload = {
     account,
     location,
     run_id,
     acx_integrity,
-    integrity: acx_integrity,
+    integrity: acx_integrity, // send both keys (no drift)
     uptime,
     response_ms,
     conversion,
@@ -136,14 +128,16 @@ export default async (req) => {
     headers: {
       "Content-Type": "application/json",
       "x-acx-secret": secret,
-      "x-acx-source": "ingest_form",
+
+      // EMPIRE: always treated as metric-writing source
+      "x-acx-source": "ingest",
+      "x-acx-source-detail": "ingest_form",
     },
     body: JSON.stringify(payload),
   });
 
   const text = await r.text();
 
-  // try to pass JSON through if possible
   try {
     return json({ ok: true, forwarded: true, upstream: JSON.parse(text) }, r.status);
   } catch {
