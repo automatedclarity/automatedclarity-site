@@ -35,9 +35,8 @@ async function readJSON(store, key) {
 }
 
 /**
- * Robust numeric parsing (no new fields/tags; additive-only):
+ * Robust numeric parsing:
  * - Handles numbers, numeric strings, "98%", "444 ms", "1,234", etc.
- * - Returns fallback when no numeric signal exists.
  */
 function toNum(x, fallback = 0) {
   if (x == null) return fallback;
@@ -46,12 +45,6 @@ function toNum(x, fallback = 0) {
   const s = String(x).trim();
   if (!s) return fallback;
 
-  // Extract the first numeric token (supports decimals and negatives).
-  // Examples:
-  // "98%" -> "98"
-  // "444 ms" -> "444"
-  // "1,234" -> "1,234" -> "1234"
-  // "3.3%" -> "3.3"
   const m = s.match(/-?\d+(?:[.,]\d+)?/);
   if (!m) return fallback;
 
@@ -61,12 +54,10 @@ function toNum(x, fallback = 0) {
 }
 
 /**
- * Backwards-compatible quotes key support (additive-only):
- * Some events may use quotes_recove, others quotes_recovered.
- * We read both without changing your schema.
+ * Backwards-compatible quotes key support:
+ * - Accepts quotes_recovered (canonical) and quotes_recove (legacy)
  */
 function getQuotesValue(ev) {
-  // Prefer canonical key if present
   if (ev?.quotes_recovered != null) return ev.quotes_recovered;
   if (ev?.quotes_recove != null) return ev.quotes_recove;
   return null;
@@ -93,12 +84,28 @@ function isWorkflowEvent(ev) {
   );
 }
 
-// Additive integrity normalization (supports old "integrity" + new "acx_integrity")
+/**
+ * Normalize integrity to ONLY:
+ * - ok
+ * - degraded
+ * - critical
+ * - unknown (fallback)
+ *
+ * Also maps legacy aliases (e.g., "optimal" -> "ok").
+ */
 function getIntegrity(ev) {
-  const v = String(ev?.acx_integrity || ev?.integrity || "unknown")
+  const raw = String(ev?.acx_integrity || ev?.integrity || "unknown")
     .toLowerCase()
     .trim();
-  return v || "unknown";
+
+  // Aliases → allowed set
+  if (raw === "optimal") return "ok";
+  if (raw === "green") return "ok";
+  if (raw === "warn" || raw === "warning") return "degraded";
+  if (raw === "red") return "critical";
+
+  if (raw === "ok" || raw === "degraded" || raw === "critical") return raw;
+  return "unknown";
 }
 
 // Normalize location so you never get "[object Object]"
@@ -190,7 +197,7 @@ export default async (req) => {
     if (req.method !== "GET")
       return json({ ok: false, error: "Method Not Allowed" }, 405);
 
-    // ✅ KEEP LOGIN (session cookie) — robust to either session.js pattern
+    // ✅ KEEP LOGIN (session cookie)
     const deny = await enforceSession(req);
     if (deny) return deny;
 
