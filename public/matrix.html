@@ -138,7 +138,7 @@
         <option value="all" selected>All</option>
         <option value="critical">Critical</option>
         <option value="degraded">Degraded</option>
-        <option value="optimal">Optimal</option>
+        <option value="ok">OK</option>
         <option value="unknown">Unknown</option>
       </select>
     </span>
@@ -166,7 +166,7 @@
     <div class="card"><div class="k">Locations</div><div class="v" id="c_locs">–</div></div>
     <div class="card"><div class="k">Critical</div><div class="v" id="c_crit">–</div></div>
     <div class="card"><div class="k">Degraded</div><div class="v" id="c_deg">–</div></div>
-    <div class="card"><div class="k">Optimal</div><div class="v" id="c_opt">–</div></div>
+    <div class="card"><div class="k">OK</div><div class="v" id="c_opt">–</div></div>
     <div class="card"><div class="k">Stale</div><div class="v" id="c_stale">–</div></div>
   </div>
 
@@ -244,7 +244,15 @@
 <script>
 const $ = (id) => document.getElementById(id);
 
-const sevClass = (s) => s==='critical'?'b-crit':(s==='degraded'?'b-deg':(s==='optimal'?'b-opt':'b-unk'));
+// Integrity -> badge class
+// Allowed: ok, degraded, critical, unknown
+const sevClass = (s) => {
+  const v = String(s || 'unknown').toLowerCase();
+  if (v === 'critical') return 'b-crit';
+  if (v === 'degraded') return 'b-deg';
+  if (v === 'ok') return 'b-opt';
+  return 'b-unk';
+};
 
 function fmtAgo(iso){
   if(!iso) return "–";
@@ -384,14 +392,14 @@ async function load() {
     if (fInt !== "all") locs = locs.filter(l => String(l.integrity||"unknown").toLowerCase() === fInt);
     if (onlyStale) locs = locs.filter(l => isStale(l.last_seen, staleMin));
 
-    const crit = locs.filter(l=>l.integrity==='critical').length;
-    const deg  = locs.filter(l=>l.integrity==='degraded').length;
-    const opt  = locs.filter(l=>l.integrity==='optimal').length;
+    const crit = locs.filter(l=>String(l.integrity||"unknown").toLowerCase()==='critical').length;
+    const deg  = locs.filter(l=>String(l.integrity||"unknown").toLowerCase()==='degraded').length;
+    const okc  = locs.filter(l=>String(l.integrity||"unknown").toLowerCase()==='ok').length;
 
     $("c_locs").textContent = String(locs.length);
     $("c_crit").textContent = String(crit);
     $("c_deg").textContent  = String(deg);
-    $("c_opt").textContent  = String(opt);
+    $("c_opt").textContent  = String(okc); // keep id to avoid structural changes
     $("c_stale").textContent = String(staleCount);
 
     $("meta").textContent = `${(data.recent||[]).length} recent rows • ${staleMin}m stale threshold`;
@@ -444,7 +452,7 @@ async function load() {
             ${
               stale
                 ? `<span class="badge b-stale">stale</span>`
-                : `<span class="badge ${sevClass(l.integrity)}">${l.integrity}</span>`
+                : `<span class="badge ${sevClass(l.integrity)}">${String(l.integrity||'unknown').toLowerCase()}</span>`
             }
           </div>
         </div>
