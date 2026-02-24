@@ -8,16 +8,9 @@
   directory = "functions"
   node_bundler = "esbuild"
 
-# Gate /matrix behind a server function (cookie auth)
+# Canonical ACX Matrix entry (root only)
 [[redirects]]
-  from = "/matrix"
-  to   = "/.netlify/functions/gate-matrix"
-  status = 200
-  force = true
-
-# Also gate direct hits to /matrix.html
-[[redirects]]
-  from = "/matrix.html"
+  from = "/"
   to   = "/.netlify/functions/gate-matrix"
   status = 200
   force = true
