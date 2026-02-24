@@ -6,16 +6,14 @@
 // ✅ Fixes (LOCKED):
 // - Integrity enum ONLY: ok | degraded | critical | unknown (no "optimal")
 // - Locations tiles are read from webhook-maintained summaries (NOT inferred from recent events)
-//   → prevents WF3/telemetry/limit from zeroing tiles
 // - Recent table is METRICS ONLY (prevents WF webhooks with zeros from polluting)
 // - Location normalized so you never get "[object Object]"
 // - Supports metrics in top-level OR inside data:{...}
 //
-// ✅ CRITICAL FIX:
-// - Netlify req.url is often RELATIVE → new URL(req.url) THROWS → lambda returns invalid response
-//   → use new URL(req.url, "https://console.automatedclarity.com")
+// ✅ NO SDK DEPENDENCY:
+// - Removes @netlify/blobs import entirely to avoid bundling/runtime module resolution drift
+// - Reads blobs via Netlify Blobs HTTP endpoint using env tokens
 
-import { getStore } from "@netlify/blobs/node";
 import { requireSession } from "./_lib/session.js";
 
 const json = (obj, status = 200) =>
@@ -24,6 +22,52 @@ const json = (obj, status = 200) =>
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
 
+// --------------- Blobs HTTP (no @netlify/blobs dependency) ---------------
+function getBlobsBase(storeName) {
+  // Netlify Blobs HTTP endpoint on same site:
+  // /.netlify/blobs/<store>/<key>
+  return `https://console.automatedclarity.com/.netlify/blobs/${encodeURIComponent(
+    storeName
+  )}/`;
+}
+
+function blobsHeaders() {
+  const h = {};
+  if (process.env.NETLIFY_SITE_ID) h["x-nf-site-id"] = process.env.NETLIFY_SITE_ID;
+  if (process.env.NETLIFY_BLOBS_TOKEN) h["x-nf-blobs-token"] = process.env.NETLIFY_BLOBS_TOKEN;
+
+  const bearer =
+    process.env.NETLIFY_API_TOKEN ||
+    process.env.NETLIFY_AUTH_TOKEN ||
+    process.env.NETLIFY_ACCESS_TOKEN ||
+    "";
+  if (bearer) h["Authorization"] = `Bearer ${bearer}`;
+
+  return h;
+}
+
+async function storeGetJSON(base, key) {
+  try {
+    const url = base + encodeURIComponent(key);
+    const r = await fetch(url, {
+      method: "GET",
+      headers: blobsHeaders(),
+    });
+    if (!r.ok) return null;
+
+    const text = await r.text();
+    if (!text) return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      // If it isn't JSON, treat as null (this function expects JSON)
+      return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
 // ---------------- helpers ----------------
 function normalizeIndex(raw) {
   if (!raw) return [];
@@ -31,24 +75,6 @@ function normalizeIndex(raw) {
   if (typeof raw === "object" && Array.isArray(raw.keys))
     return raw.keys.map(String).filter(Boolean);
   return [];
-}
-
-async function readJSON(store, key) {
-  try {
-    const v = await store.get(key, { type: "json" });
-    if (v == null) return null;
-    if (typeof v === "string") return JSON.parse(v);
-    return v;
-  } catch {
-    try {
-      const s = await store.get(key);
-      if (s == null) return null;
-      if (typeof s === "string") return JSON.parse(s);
-      return s;
-    } catch {
-      return null;
-    }
-  }
 }
 
 function toNum(x, fallback = null) {
@@ -164,7 +190,6 @@ function header(req, name) {
   }
 }
 
-// LOCKED: single secret source of truth (no env drift)
 function secretAllowed(req) {
   const got = header(req, "x-acx-secret");
   const expected = process.env.ACX_SECRET;
@@ -172,19 +197,14 @@ function secretAllowed(req) {
 }
 
 async function enforceAuth(req) {
-  // 1) cookie session path
-  // requireSession typically returns a Response (redirect) when NOT authed,
-  // and returns null/void when authed. Respect that.
   try {
     const maybe = await requireSession(req);
-    if (maybe instanceof Response) return maybe; // redirect or deny response
-    // if it returned nothing, session is OK
-    return null;
+    if (maybe instanceof Response) return maybe; // redirect/deny when not authed
+    return null; // authed
   } catch {
-    // fall through to secret path
+    // fall through
   }
 
-  // 2) secret header path
   if (secretAllowed(req)) return null;
 
   return json({ ok: false, error: "Unauthorized" }, 401);
@@ -199,23 +219,20 @@ export default async (req) => {
     const deny = await enforceAuth(req);
     if (deny) return deny;
 
-    // ✅ Netlify req.url is often RELATIVE → must provide a base
     const url = new URL(req.url, "https://console.automatedclarity.com");
-
     const limit = Math.max(
       1,
       Math.min(500, Number(url.searchParams.get("limit") || 50))
     );
 
     const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
-    const store = getStore({ name: storeName });
+    const base = getBlobsBase(storeName);
 
-    // Allow account override, default ACX
     const accountParam =
       String(url.searchParams.get("account") || "ACX").trim() || "ACX";
 
     // ---------- LOCATIONS (SOURCE OF TRUTH) ----------
-    let locations = (await readJSON(store, `locations:${accountParam}`)) || [];
+    let locations = (await storeGetJSON(base, `locations:${accountParam}`)) || [];
     if (!Array.isArray(locations)) locations = [];
 
     locations = locations
@@ -232,8 +249,8 @@ export default async (req) => {
       }));
 
     // ---------- EVENTS (RECENT TABLE + SERIES) ----------
-    const idxEventsRaw = await readJSON(store, "index:events");
-    const idxGlobalRaw = await readJSON(store, "index:global");
+    const idxEventsRaw = await storeGetJSON(base, "index:events");
+    const idxGlobalRaw = await storeGetJSON(base, "index:global");
 
     const idxEvents = normalizeIndex(idxEventsRaw);
     const idxGlobal = normalizeIndex(idxGlobalRaw);
@@ -243,12 +260,11 @@ export default async (req) => {
 
     const index_count = keys.length;
 
-    // tail (newest events)
     const tailKeys = keys.slice(Math.max(0, keys.length - limit)).reverse();
 
     const allEvents = [];
     for (const k of tailKeys) {
-      const ev = await readJSON(store, k);
+      const ev = await storeGetJSON(base, k);
       if (ev && typeof ev === "object") allEvents.push(ev);
     }
 
@@ -263,10 +279,8 @@ export default async (req) => {
       quotes_recovered: getMetric(e, "quotes_recovered"),
     }));
 
-    // ✅ Recent rows: metrics-only and not workflow telemetry
     const recent = normalizedAll.filter((e) => hasMetrics(e) && !isWorkflowEvent(e));
 
-    // ✅ Series: metrics-only
     const series = {};
     for (const ev of recent.slice().reverse()) {
       const loc = getLocationValue(ev);
@@ -290,7 +304,6 @@ export default async (req) => {
       meta: { store: storeName, index_count },
     });
   } catch (e) {
-    // IMPORTANT: always return JSON, never crash the lambda response
     return json(
       { ok: false, error: e?.message || "Unknown error", where: "acx-matrix-summary" },
       500
