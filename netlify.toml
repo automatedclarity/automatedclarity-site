@@ -6,7 +6,6 @@
 
 [functions]
   directory = "functions"
-  node_bundler = "esbuild"
 
 # Gate /matrix behind a server function (cookie auth)
 [[redirects]]
@@ -15,14 +14,12 @@
   status = 200
   force = true
 
-# Also gate direct hits to /matrix.html
 [[redirects]]
   from = "/matrix.html"
   to   = "/.netlify/functions/gate-matrix"
   status = 200
   force = true
 
-# Eliminate legacy login drift
 [[redirects]]
   from = "/login"
   to   = "/matrix-login"
