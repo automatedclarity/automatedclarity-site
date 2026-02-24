@@ -2,13 +2,20 @@
 // Browser-safe ingest relay (cookie session required)
 // - Forwards to acx-matrix-webhook server-side with x-acx-secret
 // - MUST send x-acx-source: ingest (so webhook can write summary metrics)
+// NOTE: No secrets are exposed to the browser. Secret stays server-side env.
 
 import { requireSession } from "./_lib/session.js";
 
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
     status,
-    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+    },
   });
 
 async function enforceSession(req) {
@@ -47,84 +54,101 @@ function toStr(v) {
 
 // keep numeric strings clean (webhook already parses %, commas etc)
 function toNumStr(v) {
-  const s = toStr(v);
-  return s;
+  return toStr(v);
+}
+
+// normalize location if caller sends object
+function coerceLocation(v) {
+  if (!v) return "";
+  if (typeof v === "string") return v.trim();
+  if (typeof v === "number") return String(v);
+  if (typeof v === "object") {
+    const maybe = v.id || v.locationId || v.location_id || v._id || v.value;
+    return toStr(maybe);
+  }
+  return toStr(v);
 }
 
 export default async (req) => {
-  if (req.method !== "POST") return json({ ok: false, error: "Method Not Allowed" }, 405);
-
-  const deny = await enforceSession(req);
-  if (deny) return deny;
-
-  let body = {};
   try {
-    body = await req.json();
-  } catch {
-    return json({ ok: false, error: "Invalid JSON body" }, 400);
-  }
+    if (req.method === "OPTIONS") return json({ ok: true }, 200);
+    if (req.method !== "POST")
+      return json({ ok: false, error: "Method Not Allowed" }, 405);
 
-  const account = toStr(pick(body, ["account", "account_name", "accountName"])) || "ACX";
+    const deny = await enforceSession(req);
+    if (deny) return deny;
 
-  const location = toStr(
-    pick(body, ["location", "location_id", "locationId"])
-  );
+    let body = {};
+    try {
+      body = await req.json();
+    } catch {
+      return json({ ok: false, error: "Invalid JSON body" }, 400);
+    }
 
-  const run_id =
-    toStr(pick(body, ["run_id", "runId", "test_run_id", "testRunId"])) ||
-    `run_INGEST_FORM_${Date.now()}`;
+    const account = toStr(pick(body, ["account", "account_name", "accountName"])) || "ACX";
 
-  // LOCK: dashboard + summary expect acx_integrity / integrity, values ok|degraded|critical|unknown
-  const acx_integrity = toStr(
-    pick(body, ["acx_integrity", "integrity", "integrity_status", "integrityStatus"])
-  ).toLowerCase();
+    const location = coerceLocation(
+      pick(body, ["location", "location_id", "locationId"])
+    );
 
-  const uptime = toNumStr(pick(body, ["uptime", "uptime_pct", "uptimePct"]));
-  const response_ms = toNumStr(pick(body, ["response_ms", "responseMs", "response"]));
-  const conversion = toNumStr(pick(body, ["conversion", "conv"]));
-  const quotes_recovered = toNumStr(
-    pick(body, ["quotes_recovered", "quotesRecovered", "quotes"])
-  );
+    const run_id =
+      toStr(pick(body, ["run_id", "runId", "test_run_id", "testRunId"])) ||
+      `run_INGEST_FORM_${Date.now()}`;
 
-  if (!location) {
-    return json({ ok: false, error: "Missing required field: location" }, 400);
-  }
+    // LOCK: summary expects ok|degraded|critical|unknown
+    const acx_integrity = toStr(
+      pick(body, ["acx_integrity", "integrity", "integrity_status", "integrityStatus"])
+    ).toLowerCase();
 
-  // SINGLE SOURCE OF TRUTH: ACX_SECRET (matches webhook + summary)
-  const secret = (process.env.ACX_SECRET || "").trim();
-  if (!secret) return json({ ok: false, error: "Server missing ACX_SECRET env var" }, 500);
+    const uptime = toNumStr(pick(body, ["uptime", "uptime_pct", "uptimePct"]));
+    const response_ms = toNumStr(pick(body, ["response_ms", "responseMs", "response"]));
+    const conversion = toNumStr(pick(body, ["conversion", "conv"]));
+    const quotes_recovered = toNumStr(
+      pick(body, ["quotes_recovered", "quotesRecovered", "quotes"])
+    );
 
-  const origin = new URL(req.url).origin;
+    if (!location) {
+      return json({ ok: false, error: "Missing required field: location" }, 400);
+    }
 
-  // Forward to the single writer
-  const forwardUrl = `${origin}/.netlify/functions/acx-matrix-webhook`;
+    // SINGLE SOURCE OF TRUTH: ACX_SECRET (matches webhook + summary)
+    const secret = (process.env.ACX_SECRET || "").trim();
+    if (!secret) return json({ ok: false, error: "Server missing ACX_SECRET env var" }, 500);
 
-  const payload = {
-    account,
-    location,
-    run_id,
-    acx_integrity,
-    uptime,
-    response_ms,
-    conversion,
-    quotes_recovered,
-  };
+    const origin = new URL(req.url).origin;
+    const forwardUrl = `${origin}/.netlify/functions/acx-matrix-webhook`;
 
-  const r = await fetch(forwardUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-acx-secret": secret,
-      // THIS IS THE FIX (was ingest_form). Must be EXACT "ingest".
-      "x-acx-source": "ingest",
-    },
-    body: JSON.stringify(payload),
-  });
+    const payload = {
+      account,
+      location,
+      run_id,
+      acx_integrity,
+      uptime,
+      response_ms,
+      conversion,
+      quotes_recovered,
+    };
 
-  const text = await r.text();
-  try {
-    return json({ ok: r.ok, forwarded: true, upstream: JSON.parse(text) }, r.status);
-  } catch {
-    return new Response(text, { status: r.status, headers: { "Content-Type": "text/plain" } });
+    const r = await fetch(forwardUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-acx-secret": secret,
+        "x-acx-source": "ingest",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const text = await r.text();
+    try {
+      return json({ ok: r.ok, forwarded: true, upstream: JSON.parse(text) }, r.status);
+    } catch {
+      return new Response(text, {
+        status: r.status,
+        headers: { "Content-Type": "text/plain", "Cache-Control": "no-store" },
+      });
+    }
+  } catch (e) {
+    return json({ ok: false, error: e?.message || "Unknown error" }, 500);
   }
 };
