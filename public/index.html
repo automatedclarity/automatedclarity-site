@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>ACX Matrix — Console</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    :root{
+      --bg0:#020617;
+      --bg1:#050816;
+      --card:#0b1020;
+      --card2:#0f172a;
+      --text:#f8fafc;
+      --muted:#94a3b8;
+      --line:rgba(148,163,184,.18);
+      --accent:#38bdf8;
+      --ok:#4ade80;
+      --warn:#fbbf24;
+      --crit:#fb7185;
+      --radius:18px;
+      --shadow: 0 12px 30px rgba(0,0,0,.35);
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      --sans: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{
+      font-family:var(--sans);
+      color:var(--text);
+      min-height:100vh;
+      background:
+        radial-gradient(900px 500px at 15% 10%, rgba(56,189,248,.18), transparent 60%),
+        radial-gradient(800px 520px at 85% 15%, rgba(168,85,247,.16), transparent 60%),
+        radial-gradient(900px 520px at 50% 110%, rgba(74,222,128,.10), transparent 55%),
+        linear-gradient(180deg, var(--bg1), var(--bg0));
+    }
+    .shell{max-width:1180px;margin:0 auto;padding:26px 16px 44px}
+    header{
+      display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;
+    }
+    .title h1{font-size:1.25rem;font-weight:750;letter-spacing:.2px}
+    .title p{margin-top:4px;color:var(--muted);font-size:.88rem}
+    .pill{
+      display:inline-flex;align-items:center;gap:8px;
+      background:rgba(15,23,42,.75);
+      border:1px solid var(--line);
+      padding:7px 12px;border-radius:999px;
+      color:var(--muted);font-size:.78rem;
+      backdrop-filter: blur(10px);
+      white-space:nowrap;
+    }
+    .dot{width:7px;height:7px;border-radius:999px;background:var(--ok);box-shadow:0 0 18px rgba(74,222,128,.5)}
+    .btn{
+      border-radius:999px;border:1px solid var(--line);
+      background:rgba(15,23,42,.85);
+      color:var(--text);
+      padding:9px 14px;
+      font-size:.82rem;
+      cursor:pointer;
+      transition:.15s transform ease, .15s opacity ease;
+    }
+    .btn:hover{transform:translateY(-1px);opacity:.95}
+    .btn.primary{
+      border:none;
+      background:linear-gradient(135deg, rgba(56,189,248,.95), rgba(168,85,247,.95));
+      font-weight:700;
+    }
+    .bar{
+      margin:12px 0 16px;
+      display:flex;flex-wrap:wrap;gap:10px;align-items:center;
+    }
+    .field, select{
+      border-radius:999px;border:1px solid var(--line);
+      background:rgba(15,23,42,.85);
+      color:var(--text);
+      padding:9px 12px;font-size:.82rem;
+      outline:none;
+    }
+    .field{min-width:240px}
+    .meta{color:var(--muted);font-size:.78rem}
+    .grid{
+      display:grid;
+      grid-template-columns: repeat(4, minmax(0,1fr));
+      gap:12px;
+      margin:10px 0 16px;
+    }
+    .card{
+      background:radial-gradient(circle at top left, rgba(30,41,59,.95), rgba(2,6,23,.92) 62%);
+      border:1px solid var(--line);
+      border-radius:var(--radius);
+      padding:13px 14px;
+      box-shadow: var(--shadow);
+    }
+    .label{color:var(--muted);font-size:.74rem}
+    .value{margin-top:4px;font-size:1.25rem;font-weight:750}
+    .help{margin-top:2px;color:var(--muted);font-size:.7rem}
+    .section{margin-top:14px}
+    .section h2{font-size:.85rem;color:var(--muted);font-weight:650;margin-bottom:8px}
+    .list{display:flex;flex-direction:column;gap:10px}
+    .loc{
+      background:rgba(2,6,23,.55);
+      border:1px solid rgba(148,163,184,.16);
+      border-radius:var(--radius);
+      padding:14px 16px;
+      display:grid;
+      grid-template-columns: minmax(0,2fr) repeat(4, minmax(0,1fr)) auto;
+      gap:10px;
+      align-items:center;
+    }
+    .loc .name{font-weight:750;font-size:.92rem}
+    .loc .sub{margin-top:3px;color:var(--muted);font-size:.72rem}
+    .k{color:var(--muted);font-size:.7rem}
+    .v{font-weight:650;font-size:.88rem;margin-top:2px}
+    .badge{
+      justify-self:end;
+      font-size:.72rem;
+      padding:5px 10px;
+      border-radius:999px;
+      border:1px solid transparent;
+      text-transform:lowercase;
+      font-weight:700;
+    }
+    .ok{background:rgba(74,222,128,.12);color:var(--ok);border-color:rgba(74,222,128,.25)}
+    .warn{background:rgba(251,191,36,.14);color:var(--warn);border-color:rgba(251,191,36,.25)}
+    .crit{background:rgba(251,113,133,.14);color:var(--crit);border-color:rgba(251,113,133,.25)}
+    .unk{background:rgba(148,163,184,.14);color:rgba(226,232,240,.85);border-color:rgba(148,163,184,.25)}
+    table{
+      width:100%;
+      border-collapse:collapse;
+      overflow:hidden;
+      border-radius:var(--radius);
+      border:1px solid rgba(148,163,184,.16);
+      background:rgba(2,6,23,.45);
+    }
+    th, td{padding:10px 10px;border-bottom:1px solid rgba(148,163,184,.12);text-align:left}
+    th{color:var(--muted);font-weight:700;font-size:.74rem}
+    td{font-size:.82rem}
+    .mono{font-family:var(--mono);font-size:.76rem;color:rgba(226,232,240,.88)}
+    .empty{
+      margin-top:10px;
+      color:var(--muted);
+      font-size:.85rem;
+      border:1px dashed rgba(148,163,184,.25);
+      border-radius:var(--radius);
+      padding:14px 16px;
+      background:rgba(15,23,42,.35);
+    }
+    @media (max-width: 980px){
+      .grid{grid-template-columns: repeat(2, minmax(0,1fr));}
+      .loc{grid-template-columns:minmax(0,2fr) repeat(2,minmax(0,1fr)) auto; grid-template-rows:auto auto;}
+    }
+    @media (max-width: 560px){
+      .loc{grid-template-columns:minmax(0,1fr) auto; grid-template-rows:auto auto auto;}
+      .field{min-width:100%}
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="title">
+        <h1>ACX Matrix — Console</h1>
+        <p>One dashboard · One ingest · One store · One truth</p>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+        <span class="pill"><span class="dot"></span><span id="status-pill">live</span></span>
+        <button id="refreshBtn" class="btn primary" type="button">Refresh</button>
+      </div>
+    </header>
+
+    <div class="bar">
+      <input id="search" class="field" placeholder="Search location…" />
+      <select id="integrityFilter">
+        <option value="">All integrity</option>
+        <option value="ok">ok</option>
+        <option value="degraded">degraded</option>
+        <option value="critical">critical</option>
+        <option value="unknown">unknown</option>
+      </select>
+      <select id="limit">
+        <option value="25">Recent 25</option>
+        <option value="50" selected>Recent 50</option>
+        <option value="100">Recent 100</option>
+      </select>
+      <span id="meta" class="meta"></span>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div class="label">Locations</div>
+        <div class="value" id="tileLocations">—</div>
+        <div class="help">Seen by Matrix</div>
+      </div>
+      <div class="card">
+        <div class="label">Worst integrity</div>
+        <div class="value" id="tileWorst">—</div>
+        <div class="help">Across locations</div>
+      </div>
+      <div class="card">
+        <div class="label">Recent rows</div>
+        <div class="value" id="tileRecent">—</div>
+        <div class="help">Metrics events only</div>
+      </div>
+      <div class="card">
+        <div class="label">Store index count</div>
+        <div class="value" id="tileIndex">—</div>
+        <div class="help">Blob index size</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Locations</h2>
+      <div id="locList" class="list"></div>
+      <div id="locEmpty" class="empty" style="display:none;">No locations found.</div>
+    </div>
+
+    <div class="section">
+      <h2>Recent metrics</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Location</th>
+            <th>Integrity</th>
+            <th>Uptime</th>
+            <th>Conversion</th>
+            <th>Resp (ms)</th>
+            <th>Quotes</th>
+            <th class="mono">run_id</th>
+          </tr>
+        </thead>
+        <tbody id="recentBody"></tbody>
+      </table>
+      <div id="recentEmpty" class="empty" style="display:none;">No recent metric rows found.</div>
+    </div>
+  </div>
+
+  <script>
+    const API = "/.netlify/functions/acx-matrix-summary";
+    const $ = (id) => document.getElementById(id);
+
+    const search = $("search");
+    const integrityFilter = $("integrityFilter");
+    const limitSel = $("limit");
+    const refreshBtn = $("refreshBtn");
+    const meta = $("meta");
+
+    const tileLocations = $("tileLocations");
+    const tileWorst = $("tileWorst");
+    const tileRecent = $("tileRecent");
+    const tileIndex = $("tileIndex");
+
+    const locList = $("locList");
+    const locEmpty = $("locEmpty");
+    const recentBody = $("recentBody");
+    const recentEmpty = $("recentEmpty");
+
+    let cache = { locations: [], recent: [], meta: { index_count: 0 } };
+
+    function badgeClass(integrity){
+      const s = (integrity || "unknown").toLowerCase();
+      if (s === "ok") return "badge ok";
+      if (s === "degraded" || s === "warning") return "badge warn";
+      if (s === "critical") return "badge crit";
+      return "badge unk";
+    }
+
+    function worstIntegrity(locations){
+      const rank = { ok:0, degraded:1, warning:1, critical:2, unknown:1 };
+      let worst = "ok";
+      for (const l of locations){
+        const s = (l.integrity || "unknown").toLowerCase();
+        const r = rank[s] ?? 1;
+        const w = rank[worst] ?? 0;
+        if (r > w) worst = s;
+      }
+      return worst || "unknown";
+    }
+
+    function fmtTime(ts){
+      try { return new Date(ts).toLocaleString(); } catch { return ts || "—"; }
+    }
+
+    function fmtNum(x){
+      const n = Number(x);
+      if (!Number.isFinite(n)) return "0";
+      if (Math.abs(n) >= 1000) return Math.round(n).toString();
+      return (Math.round(n*100)/100).toString();
+    }
+
+    function applyFilters(){
+      const q = (search.value || "").trim().toLowerCase();
+      const f = (integrityFilter.value || "").trim().toLowerCase();
+
+      const locs = cache.locations.filter(l => {
+        const name = String(l.location || "").toLowerCase();
+        const okQ = !q || name.includes(q);
+        const okF = !f || String(l.integrity || "unknown").toLowerCase() === f;
+        return okQ && okF;
+      });
+
+      renderLocations(locs);
+
+      const rec = cache.recent.filter(r => {
+        const name = String(r.location || "").toLowerCase();
+        const okQ = !q || name.includes(q);
+        const okF = !f || String(r.integrity || "unknown").toLowerCase() === f;
+        return okQ && okF;
+      });
+
+      renderRecent(rec);
+
+      tileLocations.textContent = String(locs.length);
+      tileWorst.textContent = worstIntegrity(locs);
+      tileRecent.textContent = String(rec.length);
+      tileIndex.textContent = String(cache.meta?.index_count ?? 0);
+    }
+
+    function renderLocations(locs){
+      locList.innerHTML = "";
+      if (!locs.length){
+        locEmpty.style.display = "block";
+        return;
+      }
+      locEmpty.style.display = "none";
+
+      for (const l of locs){
+        const wrap = document.createElement("div");
+        wrap.className = "loc";
+        wrap.innerHTML = `
+          <div>
+            <div class="name">${l.location || "—"}</div>
+            <div class="sub">Account: ${l.account || "ACX"} · Last seen: ${l.last_seen ? fmtTime(l.last_seen) : "—"}</div>
+          </div>
+          <div>
+            <div class="k">Uptime</div>
+            <div class="v">${fmtNum(l.uptime)}%</div>
+          </div>
+          <div>
+            <div class="k">Conversion</div>
+            <div class="v">${fmtNum(l.conversion)}%</div>
+          </div>
+          <div>
+            <div class="k">Response</div>
+            <div class="v">${fmtNum(l.response_ms)}</div>
+          </div>
+          <div>
+            <div class="k">Quotes</div>
+            <div class="v">${fmtNum(l.quotes_recovered)}</div>
+          </div>
+          <div class="${badgeClass(l.integrity)}">${(l.integrity || "unknown").toLowerCase()}</div>
+        `;
+        locList.appendChild(wrap);
+      }
+    }
+
+    function renderRecent(rows){
+      recentBody.innerHTML = "";
+      if (!rows.length){
+        recentEmpty.style.display = "block";
+        return;
+      }
+      recentEmpty.style.display = "none";
+
+      for (const r of rows){
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${fmtTime(r.ts)}</td>
+          <td>${r.location || "—"}</td>
+          <td><span class="${badgeClass(r.integrity)}">${(r.integrity || "unknown").toLowerCase()}</span></td>
+          <td>${fmtNum(r.uptime)}%</td>
+          <td>${fmtNum(r.conversion)}%</td>
+          <td>${fmtNum(r.response_ms)}</td>
+          <td>${fmtNum(r.quotes_recovered)}</td>
+          <td class="mono">${r.run_id ? String(r.run_id).slice(0,40) : "—"}</td>
+        `;
+        recentBody.appendChild(tr);
+      }
+    }
+
+    async function load(){
+      const limit = Number(limitSel.value || 50);
+      meta.textContent = "Loading…";
+
+      const url = `${API}?limit=${encodeURIComponent(limit)}`;
+      const res = await fetch(url, { cache: "no-store" });
+
+      if (!res.ok){
+        meta.textContent = "Load failed";
+        cache = { locations: [], recent: [], meta: { index_count: 0 } };
+        applyFilters();
+        return;
+      }
+
+      const json = await res.json();
+      cache.locations = Array.isArray(json.locations) ? json.locations : [];
+      cache.recent = Array.isArray(json.recent) ? json.recent : [];
+      cache.meta = json.meta || { index_count: 0 };
+
+      meta.textContent = `Locations: ${cache.locations.length} · Recent: ${cache.recent.length}`;
+      applyFilters();
+    }
+
+    search.addEventListener("input", applyFilters);
+    integrityFilter.addEventListener("change", applyFilters);
+    limitSel.addEventListener("change", load);
+    refreshBtn.addEventListener("click", load);
+
+    load();
+  </script>
+</body>
+</html>
