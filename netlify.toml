@@ -6,6 +6,7 @@
 
 [functions]
   directory = "functions"
+  external_node_modules = ["@netlify/blobs"]
 
 # Gate /matrix behind a server function (cookie auth)
 [[redirects]]
