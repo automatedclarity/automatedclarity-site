@@ -8,9 +8,16 @@
   directory = "functions"
   node_bundler = "esbuild"
 
-# Canonical ACX Matrix entry (root only)
+# Canonical ACX Matrix entry
 [[redirects]]
-  from = "/"
+  from = "/matrix"
   to   = "/.netlify/functions/gate-matrix"
   status = 200
+  force = true
+
+# OPTIONAL: root should point to Matrix (keeps marketing/homepage separate later)
+[[redirects]]
+  from = "/"
+  to   = "/matrix"
+  status = 302
   force = true
