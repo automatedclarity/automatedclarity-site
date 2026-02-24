@@ -1,66 +1,14 @@
 // functions/acx-matrix-ingest-integrity.js
-import { getStore } from "@netlify/blobs";
+// EMPIRE FIX:
+// This endpoint must NOT write blobs directly.
+// It must forward into acx-matrix-webhook (single source of truth),
+// because the dashboard reads the webhook schema only.
 
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
     status,
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
-
-function authOk(req) {
-  const expected = (process.env.ACX_WEBHOOK_SECRET || "").trim();
-  const got = (req.headers.get("x-acx-secret") || "").trim();
-  return !!expected && got === expected;
-}
-
-function normalizeIndex(raw) {
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
-  if (typeof raw === "object") {
-    if (Array.isArray(raw.keys)) return raw.keys.map(String).filter(Boolean);
-    if (Array.isArray(raw.items)) return raw.items.map(String).filter(Boolean);
-  }
-  return [];
-}
-
-function uniqAppend(list, key, max = 5000) {
-  const out = Array.isArray(list) ? list.slice() : [];
-  const i = out.indexOf(key);
-  if (i >= 0) out.splice(i, 1);
-  out.push(key);
-  if (out.length > max) out.splice(0, out.length - max);
-  return out;
-}
-
-async function readJSON(store, key) {
-  try {
-    const v = await store.get(key, { type: "json" });
-    if (v == null) return null;
-    if (typeof v === "string") return JSON.parse(v);
-    return v;
-  } catch {
-    try {
-      const s = await store.get(key);
-      if (s == null) return null;
-      if (typeof s === "string") return JSON.parse(s);
-      return s;
-    } catch {
-      return null;
-    }
-  }
-}
-
-async function writeJSON(store, key, obj) {
-  if (typeof store.setJSON === "function") {
-    await store.setJSON(key, obj);
-    return;
-  }
-  if (typeof store.set === "function") {
-    await store.set(key, JSON.stringify(obj));
-    return;
-  }
-  throw new Error("Blob store missing setJSON/set");
-}
 
 function pickFirst(obj, keys) {
   for (const k of keys) {
@@ -76,7 +24,6 @@ function coerceLocationId(v) {
   if (typeof v === "string") return v.trim();
   if (typeof v === "number") return String(v);
   if (typeof v === "object") {
-    // common shapes: {id:"..."}, {locationId:"..."}, etc.
     const maybe =
       v.id || v.location_id || v.locationId || v._id || v.value || "";
     return String(maybe || "").trim();
@@ -84,9 +31,28 @@ function coerceLocationId(v) {
   return String(v).trim();
 }
 
+// Allow both secrets so you don’t get locked out by env drift
+function authOk(req) {
+  const got = (req.headers.get("x-acx-secret") || "").trim();
+
+  const expectedA = (process.env.ACX_WEBHOOK_SECRET || "").trim();
+  const expectedB = (process.env.ACX_SECRET || "").trim();
+  const expectedC = (process.env.X_ACX_SECRET || "").trim();
+
+  if (!got) return false;
+  if (expectedA && got === expectedA) return true;
+  if (expectedB && got === expectedB) return true;
+  if (expectedC && got === expectedC) return true;
+
+  return false;
+}
+
 export default async (req) => {
   try {
-    if (req.method !== "POST") return json({ ok: false, error: "Method Not Allowed" }, 405);
+    if (req.method === "OPTIONS") return json({ ok: true }, 200);
+    if (req.method !== "POST")
+      return json({ ok: false, error: "Method Not Allowed" }, 405);
+
     if (!authOk(req)) return json({ ok: false, error: "Unauthorized" }, 401);
 
     let body = {};
@@ -96,75 +62,82 @@ export default async (req) => {
       return json({ ok: false, error: "Bad JSON" }, 400);
     }
 
-    const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
-    const store = getStore({ name: storeName });
-
-    // ✅ Accept both keys, prefer explicit "integrity"
+    // Accept both keys, prefer explicit "integrity"
     const integrityRaw = pickFirst(body, ["integrity", "acx_integrity"]);
+    const integrity = String(integrityRaw || "").toLowerCase().trim();
 
-    const integrity = String(integrityRaw || "unknown").toLowerCase().trim();
-
-    // ✅ Accept location OR location_id OR locationId and handle object
+    // Accept location OR location_id OR locationId and handle object
     const location = coerceLocationId(
       pickFirst(body, ["location", "location_id", "locationId"])
     );
 
-    const account = String(pickFirst(body, ["account", "account_name"]) || "ACX");
-    const run_id = String(pickFirst(body, ["run_id", "runId"]) || `run-${Date.now()}`);
-
-    const allowed = new Set(["critical", "degraded", "optimal", "unknown"]);
-    if (!allowed.has(integrity)) {
-      return json(
-        {
-          ok: false,
-          error: "Invalid integrity",
-          received: { integrityRaw, integrity, location: typeof body.location },
-          hint: 'Send integrity as "critical|degraded|optimal" (or use acx_integrity).',
-        },
-        400
-      );
-    }
+    const account = String(pickFirst(body, ["account", "account_name"]) || "ACX").trim() || "ACX";
+    const run_id =
+      String(pickFirst(body, ["run_id", "runId"]) || "").trim() ||
+      `run-${Date.now()}`;
 
     if (!location) return json({ ok: false, error: "Missing location" }, 400);
 
-    const event = {
-      ts: new Date().toISOString(),
+    // We do NOT validate integrity here beyond basic presence,
+    // because acx-matrix-webhook is the canonical normalizer.
+    // (webhook maps optimal->ok, unknown->missing, etc.)
+    const payload = {
       account,
       location,
-      uptime: Number(body.uptime ?? 0),
-      conversion: Number(body.conversion ?? 0),
-      response_ms: Number(body.response_ms ?? 0),
-      quotes_recovered: Number(body.quotes_recovered ?? 0),
-      integrity,
       run_id,
-      source: String(pickFirst(body, ["source"]) || "sentinel"),
+
+      // send BOTH keys so webhook can normalize reliably
+      acx_integrity: integrity,
+      integrity: integrity,
+
+      // allow optional metrics passthrough if provided
+      uptime: body.uptime ?? "",
+      conversion: body.conversion ?? "",
+      response_ms: body.response_ms ?? "",
+      quotes_recovered: body.quotes_recovered ?? "",
+
+      // preserve source if caller provided it
+      source: String(pickFirst(body, ["source"]) || "sentinel").trim(),
     };
 
-    const key = `event:${location}:${Date.now()}`;
+    // Forward to the single writer
+    const origin = new URL(req.url).origin;
+    const forwardUrl = `${origin}/.netlify/functions/acx-matrix-webhook`;
 
-    // 1) Write event
-    await writeJSON(store, key, event);
+    // Use the SAME secret the webhook expects
+    const secret =
+      (process.env.ACX_SECRET || "").trim() ||
+      (process.env.ACX_WEBHOOK_SECRET || "").trim() ||
+      (process.env.X_ACX_SECRET || "").trim();
 
-    // 2) Update global index
-    const rawGlobal = await readJSON(store, "index:events");
-    const globalKeys = normalizeIndex(rawGlobal);
-    const nextGlobal = uniqAppend(globalKeys, key, 5000);
-    await writeJSON(store, "index:events", { keys: nextGlobal });
+    if (!secret) {
+      return json({ ok: false, error: "Server missing ACX secret env var" }, 500);
+    }
 
-    // 3) Update per-location index
-    const locIndexKey = `index:loc:${location}`;
-    const rawLoc = await readJSON(store, locIndexKey);
-    const locKeys = normalizeIndex(rawLoc);
-    const nextLoc = uniqAppend(locKeys, key, 2000);
-    await writeJSON(store, locIndexKey, { keys: nextLoc });
+    const upstream = await fetch(forwardUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-acx-secret": secret,
 
-    return json({
-      ok: true,
-      key,
-      store: storeName,
-      event,
-      index: { global_count: nextGlobal.length, loc_count: nextLoc.length },
+        // ✅ Critical: allow summary metric writes when metrics are included
+        // (and keep behavior consistent with curl)
+        "x-acx-source": "ingest",
+      },
+      body: JSON.stringify(payload),
     });
+
+    const text = await upstream.text();
+
+    // Pass through upstream as-is
+    try {
+      return json({ ok: true, forwarded: true, upstream: JSON.parse(text) }, upstream.status);
+    } catch {
+      return new Response(text, {
+        status: upstream.status,
+        headers: { "Content-Type": "text/plain", "Cache-Control": "no-store" },
+      });
+    }
   } catch (e) {
     return json({ ok: false, error: e?.message || "Unknown error" }, 500);
   }
