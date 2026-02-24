@@ -15,6 +15,7 @@
 // - Reads blobs via Netlify Blobs HTTP endpoint using env tokens
 
 import { requireSession } from "./_lib/session.js";
+import { getStore } from "@netlify/blobs";
 
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
@@ -46,7 +47,17 @@ function blobsHeaders() {
   return h;
 }
 
-async function storeGetJSON(base, key) {
+async function storeGetJSON(base, key, store) {
+  // Prefer SDK (same as acx-matrix-recent) so summary reads the same store/index reliably
+  try {
+    if (store) {
+      const v = await store.get(key, { type: "json" });
+      if (v !== null && v !== undefined) return v;
+    }
+  } catch {
+    // fall through to HTTP
+  }
+
   try {
     const url = base + encodeURIComponent(key);
     const r = await fetch(url, {
@@ -227,12 +238,14 @@ export default async (req) => {
 
     const storeName = process.env.ACX_BLOBS_STORE || "acx-matrix";
     const base = getBlobsBase(storeName);
+    const store = getStore({ name: storeName });
 
     const accountParam =
       String(url.searchParams.get("account") || "ACX").trim() || "ACX";
 
     // ---------- LOCATIONS (SOURCE OF TRUTH) ----------
-    let locations = (await storeGetJSON(base, `locations:${accountParam}`)) || [];
+    let locations =
+      (await storeGetJSON(base, `locations:${accountParam}`, store)) || [];
     if (!Array.isArray(locations)) locations = [];
 
     locations = locations
@@ -249,7 +262,7 @@ export default async (req) => {
       }));
 
     // ---------- EVENTS (RECENT TABLE + SERIES) ----------
-    const idxGlobalRaw = await storeGetJSON(base, "index:global");
+    const idxGlobalRaw = await storeGetJSON(base, "index:global", store);
     const idxGlobal = normalizeIndex(idxGlobalRaw);
 
     let keys = dedupeKeepOrder([...idxGlobal]);
@@ -261,7 +274,7 @@ export default async (req) => {
 
     const allEvents = [];
     for (const k of tailKeys) {
-      const ev = await storeGetJSON(base, k);
+      const ev = await storeGetJSON(base, k, store);
       if (ev && typeof ev === "object") allEvents.push(ev);
     }
 
@@ -276,7 +289,9 @@ export default async (req) => {
       quotes_recovered: getMetric(e, "quotes_recovered"),
     }));
 
-    const recent = normalizedAll.filter((e) => hasMetrics(e) && !isWorkflowEvent(e));
+    const recent = normalizedAll.filter(
+      (e) => hasMetrics(e) && !isWorkflowEvent(e)
+    );
 
     const series = {};
     for (const ev of recent.slice().reverse()) {
