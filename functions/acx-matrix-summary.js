@@ -249,13 +249,10 @@ export default async (req) => {
       }));
 
     // ---------- EVENTS (RECENT TABLE + SERIES) ----------
-    const idxEventsRaw = await storeGetJSON(base, "index:events");
     const idxGlobalRaw = await storeGetJSON(base, "index:global");
-
-    const idxEvents = normalizeIndex(idxEventsRaw);
     const idxGlobal = normalizeIndex(idxGlobalRaw);
 
-    let keys = dedupeKeepOrder([...idxEvents, ...idxGlobal]);
+    let keys = dedupeKeepOrder([...idxGlobal]);
     keys = sortEventKeysAscending(keys);
 
     const index_count = keys.length;
