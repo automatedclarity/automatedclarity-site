@@ -10,6 +10,10 @@
 // - Recent table is METRICS ONLY (prevents WF webhooks with zeros from polluting)
 // - Location normalized so you never get "[object Object]"
 // - Supports metrics in top-level OR inside data:{...}
+//
+// ✅ CRITICAL FIX:
+// - Netlify req.url is often RELATIVE → new URL(req.url) THROWS → lambda returns invalid response
+//   → use new URL(req.url, "https://console.automatedclarity.com")
 
 import { getStore } from "@netlify/blobs";
 import { requireSession } from "./_lib/session.js";
@@ -169,15 +173,15 @@ function secretAllowed(req) {
 
 async function enforceAuth(req) {
   // 1) cookie session path
+  // requireSession typically returns a Response (redirect) when NOT authed,
+  // and returns null/void when authed. Respect that.
   try {
-    const res = await requireSession(req);
-    if (res && typeof res === "object" && "ok" in res) {
-      if (res.ok) return null;
-    } else {
-      return null; // session OK
-    }
+    const maybe = await requireSession(req);
+    if (maybe instanceof Response) return maybe; // redirect or deny response
+    // if it returned nothing, session is OK
+    return null;
   } catch {
-    // fall through
+    // fall through to secret path
   }
 
   // 2) secret header path
@@ -195,7 +199,9 @@ export default async (req) => {
     const deny = await enforceAuth(req);
     if (deny) return deny;
 
-    const url = new URL(req.url);
+    // ✅ Netlify req.url is often RELATIVE → must provide a base
+    const url = new URL(req.url, "https://console.automatedclarity.com");
+
     const limit = Math.max(
       1,
       Math.min(500, Number(url.searchParams.get("limit") || 50))
@@ -205,12 +211,10 @@ export default async (req) => {
     const store = getStore({ name: storeName });
 
     // Allow account override, default ACX
-    const accountParam = String(url.searchParams.get("account") || "ACX").trim() || "ACX";
+    const accountParam =
+      String(url.searchParams.get("account") || "ACX").trim() || "ACX";
 
     // ---------- LOCATIONS (SOURCE OF TRUTH) ----------
-    // ✅ Pull precomputed location tiles written by webhook:
-    // - locations:${account}
-    // This prevents WF3/telemetry/limit from ever zeroing tiles.
     let locations = (await readJSON(store, `locations:${accountParam}`)) || [];
     if (!Array.isArray(locations)) locations = [];
 
@@ -228,7 +232,6 @@ export default async (req) => {
       }));
 
     // ---------- EVENTS (RECENT TABLE + SERIES) ----------
-    // We keep events for charts + recent rows, but do NOT use them to compute tiles.
     const idxEventsRaw = await readJSON(store, "index:events");
     const idxGlobalRaw = await readJSON(store, "index:global");
 
@@ -287,6 +290,10 @@ export default async (req) => {
       meta: { store: storeName, index_count },
     });
   } catch (e) {
-    return json({ ok: false, error: e?.message || "Unknown error" }, 500);
+    // IMPORTANT: always return JSON, never crash the lambda response
+    return json(
+      { ok: false, error: e?.message || "Unknown error", where: "acx-matrix-summary" },
+      500
+    );
   }
 };
