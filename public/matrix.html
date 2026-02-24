@@ -5,529 +5,774 @@
   <title>ACX Matrix — Dashboard</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
-    :root {
-      --bg: #050816;
-      --bg-card: #0b1020;
-      --bg-card-soft: #11162a;
-      --text-main: #f9fafb;
-      --text-muted: #9ca3af;
-      --accent: #38bdf8;
-      --accent-soft: rgba(56, 189, 248, 0.12);
-      --danger: #f97373;
-      --danger-soft: rgba(248, 113, 113, 0.16);
-      --warn: #fbbf24;
-      --warn-soft: rgba(251, 191, 36, 0.16);
-      --ok: #4ade80;
-      --ok-soft: rgba(74, 222, 128, 0.16);
-      --border-subtle: #1f2933;
-      --radius-xl: 18px;
+    :root{
+      --bg0:#000;
+      --bg1:#020617;
+      --bg2:#0b1020;
+      --card:#0b1224;
+      --card2:#0a1328;
+      --stroke:rgba(148,163,184,.22);
+      --stroke2:rgba(31,41,55,.88);
+      --text:#f9fafb;
+      --muted:#9ca3af;
+      --muted2:#cbd5e1;
+      --chip:rgba(15,23,42,.85);
+      --accent:#3b82f6;
+      --ok:#22c55e;
+      --warn:#fbbf24;
+      --crit:#fb7185;
+      --unk:#94a3b8;
+      --radius:18px;
+      --radius2:16px;
+      --shadow: 0 0 0 1px rgba(148,163,184,.10) inset, 0 18px 40px rgba(0,0,0,.35);
     }
 
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-      background: radial-gradient(circle at top left, #111827 0, #020617 45%, #000000 100%);
-      color: var(--text-main);
-      min-height: 100vh;
+      color:var(--text);
+      background: radial-gradient(circle at 18% 0%, #111827 0%, #020617 45%, #000000 100%);
+      min-height:100vh;
     }
-
-    .shell { max-width: 1120px; margin: 0 auto; padding: 24px 16px 40px; }
-
-    header {
-      display: flex; align-items: center; justify-content: space-between;
-      margin-bottom: 18px;
+    .shell{max-width:1180px;margin:0 auto;padding:28px 16px 50px}
+    header{
+      display:flex;align-items:flex-start;justify-content:space-between;
+      gap:14px;margin-bottom:16px;
     }
-
-    .title-group h1 { font-size: 1.5rem; font-weight: 700; }
-    .title-group p { font-size: 0.9rem; color: var(--text-muted); margin-top: 4px; }
-
-    .btn-ghost {
-      border-radius: 999px;
-      border: 1px solid rgba(148, 163, 184, 0.25);
-      padding: 8px 14px;
-      font-size: 0.85rem;
-      background: rgba(15, 23, 42, 0.8);
-      color: var(--text-main);
-      cursor: pointer;
+    .title h1{font-size:1.65rem;font-weight:800;letter-spacing:.2px}
+    .title p{margin-top:4px;color:var(--muted);font-size:.92rem}
+    .btn{
+      border:1px solid rgba(148,163,184,.25);
+      background:rgba(15,23,42,.75);
+      color:var(--text);
+      border-radius:999px;
+      padding:9px 14px;
+      font-size:.85rem;
+      cursor:pointer;
+      transition:transform .05s ease, opacity .15s ease;
+      user-select:none;
     }
-
-    .controls {
-      display: flex; gap: 12px; align-items: center;
-      margin-bottom: 16px; flex-wrap: wrap;
+    .btn:active{transform:translateY(1px)}
+    .btn.primary{
+      border:none;
+      background:linear-gradient(135deg,#3b82f6,#a855f7);
+      font-weight:700;
+      padding:10px 16px;
     }
-
-    .chip-label { font-size: 0.75rem; color: var(--text-muted); margin-right: 4px; }
-
-    .select, .btn {
-      border-radius: 999px;
-      border: 1px solid rgba(148, 163, 184, 0.25);
-      background: rgba(15, 23, 42, 0.9);
-      color: var(--text-main);
-      font-size: 0.8rem;
-      padding: 6px 10px;
+    .btn.secondary{
+      background:rgba(15,23,42,.55);
     }
+    .btn:disabled{opacity:.6;cursor:not-allowed}
 
-    .btn-primary {
-      background: linear-gradient(135deg, #38bdf8, #a855f7);
-      border: none;
-      font-weight: 600;
-      cursor: pointer;
+    .controls{
+      display:grid;
+      grid-template-columns: 160px 160px 1fr 160px 200px 110px;
+      gap:10px;
+      align-items:center;
+      margin: 10px 0 14px;
     }
-
-    .summary-grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 12px;
-      margin-bottom: 18px;
+    .control{
+      background:rgba(15,23,42,.55);
+      border:1px solid rgba(148,163,184,.22);
+      border-radius:999px;
+      padding:8px 10px;
+      display:flex;align-items:center;gap:8px;
     }
+    .control label{
+      color:var(--muted);
+      font-size:.75rem;
+      white-space:nowrap;
+    }
+    .control input, .control select{
+      background:transparent;
+      border:none;
+      outline:none;
+      color:var(--text);
+      width:100%;
+      font-size:.86rem;
+    }
+    .control input::placeholder{color:rgba(148,163,184,.65)}
+    .control.compact{justify-content:space-between}
+    .control .toggle{
+      display:flex;align-items:center;gap:8px;
+      color:var(--muted);
+      font-size:.78rem;
+      white-space:nowrap;
+    }
+    .control .toggle input{width:auto}
+    .meta-row{
+      display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+      margin-bottom:14px;
+      color:var(--muted);
+      font-size:.82rem;
+    }
+    .pill{
+      display:inline-flex;align-items:center;gap:8px;
+      border-radius:999px;
+      padding:6px 10px;
+      background:rgba(15,23,42,.70);
+      border:1px solid rgba(148,163,184,.18);
+      color:rgba(226,232,240,.95);
+      font-size:.78rem;
+    }
+    .dot{width:7px;height:7px;border-radius:999px;background:var(--ok);box-shadow:0 0 12px rgba(34,197,94,.45)}
 
-    .summary-card {
-      background: radial-gradient(circle at top left, #1e293b 0, #020617 60%);
-      border-radius: var(--radius-xl);
+    .summary{
+      display:grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap:10px;
+      margin: 8px 0 18px;
+    }
+    .card{
+      background: radial-gradient(circle at top left, #0f1b35 0, #020617 65%);
+      border-radius: var(--radius);
+      border:1px solid rgba(148,163,184,.18);
+      box-shadow: var(--shadow);
       padding: 12px 14px;
-      border: 1px solid rgba(148, 163, 184, 0.25);
     }
+    .card .k{color:var(--muted);font-size:.76rem;margin-bottom:4px}
+    .card .v{font-size:1.35rem;font-weight:800}
+    .card .h{color:var(--muted);font-size:.72rem;margin-top:2px}
 
-    .summary-label { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px; }
-    .summary-value { font-size: 1.25rem; font-weight: 600; }
-    .summary-help { font-size: 0.7rem; color: var(--text-muted); margin-top: 2px; }
-
-    .section-title {
-      font-size: 0.85rem;
-      color: var(--text-muted);
-      margin-bottom: 6px;
-      margin-top: 10px;
+    .section-head{
+      display:flex;align-items:center;justify-content:space-between;gap:10px;
+      margin: 14px 0 8px;
     }
+    .section-head h2{font-size:1.05rem;font-weight:800;color:rgba(226,232,240,.95)}
+    .section-head .tip{color:var(--muted);font-size:.78rem}
 
-    .list { display: flex; flex-direction: column; gap: 8px; }
-
-    .loc-card {
-      background: radial-gradient(circle at top left, #020617 0, #020617 60%);
-      border-radius: var(--radius-xl);
+    .loc-list{display:flex;flex-direction:column;gap:10px}
+    .loc{
+      background: radial-gradient(circle at top left, #020617 0, #020617 70%);
+      border-radius: var(--radius);
+      border:1px solid rgba(31,41,55,.92);
       padding: 14px 16px;
-      border: 1px solid rgba(31, 41, 55, 0.9);
-      display: grid;
-      grid-template-columns: minmax(0, 2fr) repeat(3, minmax(0, 1fr)) auto;
-      gap: 10px;
-      align-items: center;
+      display:grid;
+      grid-template-columns: 260px 120px 120px 120px 92px 1fr 92px;
+      gap:12px;
+      align-items:center;
+      box-shadow: 0 0 0 1px rgba(148,163,184,.06) inset;
+    }
+    .loc .main{display:flex;flex-direction:column;gap:2px}
+    .loc .acct{font-weight:900;letter-spacing:.2px}
+    .loc .id{color:rgba(226,232,240,.92);font-weight:700;font-size:.9rem;word-break:break-all}
+    .loc .sub{color:var(--muted);font-size:.76rem}
+    .metric{display:flex;flex-direction:column;gap:2px}
+    .metric .k{color:var(--muted);font-size:.72rem}
+    .metric .v{font-size:1.22rem;font-weight:900;letter-spacing:.2px}
+    .charts{display:flex;gap:10px;justify-content:flex-end;flex-wrap:nowrap}
+    .mini{
+      width:96px;height:56px;
+      border-radius:14px;
+      border:1px solid rgba(148,163,184,.16);
+      background:rgba(15,23,42,.35);
+      padding:8px 8px 6px;
+      display:flex;flex-direction:column;gap:6px;
+    }
+    .mini .k{font-size:.7rem;color:var(--muted);font-weight:700}
+    .mini svg{width:100%;height:100%}
+    .badge{
+      justify-self:end;
+      display:inline-flex;align-items:center;justify-content:center;
+      border-radius:999px;
+      padding:6px 12px;
+      font-size:.78rem;
+      font-weight:800;
+      border:1px solid transparent;
+      text-transform:capitalize;
+      white-space:nowrap;
+    }
+    .b-ok{background:rgba(34,197,94,.14);color:var(--ok);border-color:rgba(34,197,94,.35)}
+    .b-warn{background:rgba(251,191,36,.14);color:var(--warn);border-color:rgba(251,191,36,.35)}
+    .b-crit{background:rgba(251,113,133,.14);color:var(--crit);border-color:rgba(251,113,133,.35)}
+    .b-unk{background:rgba(148,163,184,.14);color:rgba(226,232,240,.92);border-color:rgba(148,163,184,.28)}
+    .b-stale{background:rgba(148,163,184,.10);color:rgba(226,232,240,.86);border-color:rgba(148,163,184,.20)}
+
+    .table{
+      margin-top:12px;
+      border-radius: var(--radius);
+      border:1px solid rgba(31,41,55,.92);
+      overflow:hidden;
+      background:rgba(2,6,23,.55);
+      box-shadow: 0 0 0 1px rgba(148,163,184,.06) inset;
+    }
+    table{width:100%;border-collapse:collapse}
+    thead th{
+      text-align:left;
+      font-size:.74rem;
+      letter-spacing:.08em;
+      color:rgba(148,163,184,.9);
+      padding:12px 14px;
+      border-bottom:1px solid rgba(148,163,184,.14);
+      background:rgba(15,23,42,.35);
+      white-space:nowrap;
+    }
+    tbody td{
+      padding:11px 14px;
+      border-bottom:1px solid rgba(148,163,184,.10);
+      color:rgba(226,232,240,.95);
+      font-size:.86rem;
+      white-space:nowrap;
+      vertical-align:middle;
+    }
+    tbody tr:hover{background:rgba(59,130,246,.06)}
+    .td-muted{color:var(--muted)}
+    .td-mono{font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;}
+    .empty{
+      margin-top:10px;
+      padding:16px;
+      border-radius: var(--radius);
+      border:1px dashed rgba(148,163,184,.25);
+      background:rgba(15,23,42,.35);
+      color:var(--muted);
+      font-size:.86rem;
     }
 
-    .loc-main { display: flex; flex-direction: column; gap: 2px; }
-    .loc-name { font-size: 0.9rem; font-weight: 600; }
-    .loc-sub { font-size: 0.7rem; color: var(--text-muted); }
-
-    .metric-block { display: flex; flex-direction: column; gap: 2px; }
-    .metric-label { font-size: 0.7rem; color: var(--text-muted); }
-    .metric-value { font-size: 0.9rem; font-weight: 500; }
-
-    .trend-link {
-      font-size: 0.75rem;
-      color: var(--accent);
-      text-decoration: none;
-      opacity: 0.9;
+    @media (max-width: 1080px){
+      .controls{grid-template-columns: 1fr 1fr 1fr 1fr 1fr 110px}
+      .loc{grid-template-columns: 1.4fr .9fr .9fr .9fr .7fr 1fr .7fr}
     }
-
-    .badge {
-      font-size: 0.7rem;
-      padding: 4px 10px;
-      border-radius: 999px;
-      font-weight: 500;
-      text-transform: lowercase;
-      border: 1px solid transparent;
-      justify-self: flex-end;
-    }
-
-    .badge-ok {
-      background: var(--ok-soft);
-      color: var(--ok);
-      border-color: rgba(74, 222, 128, 0.4);
-    }
-
-    .badge-degraded {
-      background: var(--warn-soft);
-      color: var(--warn);
-      border-color: rgba(251, 191, 36, 0.4);
-    }
-
-    .badge-critical {
-      background: var(--danger-soft);
-      color: var(--danger);
-      border-color: rgba(248, 113, 113, 0.4);
-    }
-
-    .badge-unknown {
-      background: rgba(148, 163, 184, 0.14);
-      color: rgba(226, 232, 240, 0.9);
-      border-color: rgba(148, 163, 184, 0.25);
-    }
-
-    .tab-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      border-radius: 999px;
-      padding: 4px 10px;
-      font-size: 0.75rem;
-      background: rgba(15, 23, 42, 0.9);
-      border: 1px solid rgba(148, 163, 184, 0.25);
-    }
-
-    .tab-dot { width: 6px; height: 6px; border-radius: 999px; background: #22c55e; }
-
-    .empty {
-      font-size: 0.8rem;
-      color: var(--text-muted);
-      padding: 16px;
-      border-radius: var(--radius-xl);
-      border: 1px dashed rgba(55, 65, 81, 0.8);
-      background: rgba(15, 23, 42, 0.6);
-      margin-top: 8px;
-    }
-
-    @media (max-width: 900px) {
-      .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .loc-card { grid-template-columns: 1.6fr 1.2fr 1.2fr; grid-template-rows: auto auto; }
-      .metric-block:nth-child(3),
-      .metric-block:nth-child(4),
-      .badge { justify-self: flex-start; }
-    }
-
-    @media (max-width: 640px) {
-      .loc-card { grid-template-columns: 1.6fr 1.2fr; grid-template-rows: auto auto auto; }
+    @media (max-width: 860px){
+      .summary{grid-template-columns: repeat(2, minmax(0,1fr));}
+      .controls{grid-template-columns: 1fr 1fr; }
+      .loc{grid-template-columns: 1fr 1fr; grid-auto-rows:auto; }
+      .charts{justify-content:flex-start}
+      .badge{justify-self:start}
+      thead{display:none}
+      tbody td{white-space:normal}
+      tbody tr{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:10px 12px;border-bottom:1px solid rgba(148,163,184,.10)}
+      tbody td{border-bottom:none;padding:0}
     }
   </style>
 </head>
 <body>
   <div class="shell">
     <header>
-      <div class="title-group">
+      <div class="title">
         <h1>ACX Matrix — Dashboard</h1>
-        <p>Integrity &amp; metrics across locations (internal only)</p>
+        <p>Live integrity &amp; performance across locations</p>
       </div>
-      <button id="logout-btn" class="btn-ghost" type="button">Log out</button>
+      <div style="display:flex;gap:10px;align-items:center;">
+        <button id="logoutBtn" class="btn secondary" type="button">Log out</button>
+      </div>
     </header>
 
     <div class="controls">
-      <div>
-        <span class="chip-label">Auto-refresh</span>
-        <select id="refresh-select" class="select">
+      <div class="control">
+        <label>Auto-refresh</label>
+        <select id="refreshSel">
           <option value="0">Off</option>
           <option value="10">10s</option>
           <option value="30">30s</option>
           <option value="60">60s</option>
         </select>
       </div>
-      <div>
-        <span class="chip-label">Recent rows</span>
-        <select id="limit-select" class="select">
+
+      <div class="control">
+        <label>Recent rows</label>
+        <select id="limitSel">
           <option value="25">25</option>
-          <option value="50" selected>50</option>
-          <option value="100">100</option>
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+          <option value="200">200</option>
         </select>
       </div>
-      <button id="load-btn" class="btn btn-primary" type="button">Load</button>
-      <span id="load-meta" class="chip-label"></span>
-      <span class="tab-pill">
-        <span class="tab-dot"></span>
-        Engine · Sentinel · Matrix · 24/7 underlay
-      </span>
-    </div>
 
-    <div class="summary-grid" id="summary-grid">
-      <div class="summary-card">
-        <div class="summary-label">Locations (tiles)</div>
-        <div class="summary-value" id="summary-locations">0</div>
-        <div class="summary-help">Webhook-maintained location tiles</div>
+      <div class="control">
+        <label>Search</label>
+        <input id="searchInp" placeholder="account or location…" />
       </div>
-      <div class="summary-card">
-        <div class="summary-label">Index events (store)</div>
-        <div class="summary-value" id="summary-index">0</div>
-        <div class="summary-help">Total stored events (for charts)</div>
+
+      <div class="control">
+        <label>Integrity</label>
+        <select id="integritySel">
+          <option value="all" selected>All</option>
+          <option value="critical">Critical</option>
+          <option value="degraded">Degraded</option>
+          <option value="ok">OK</option>
+          <option value="unknown">Unknown</option>
+        </select>
       </div>
-      <div class="summary-card">
-        <div class="summary-label">Recent rows loaded</div>
-        <div class="summary-value" id="summary-recent">0</div>
-        <div class="summary-help">Metrics-only rows</div>
-      </div>
-      <div class="summary-card">
-        <div class="summary-label">Integrity (worst)</div>
-        <div class="summary-value" id="summary-health">unknown</div>
-        <div class="summary-help">ok · degraded · critical · unknown</div>
-      </div>
-    </div>
 
-    <div class="section-title">Ingest (browser → ingest-form)</div>
-    <div class="summary-card" style="margin-bottom: 16px;">
-      <form id="ingest-form" style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;align-items:end;">
-        <div class="metric-block">
-          <div class="metric-label">Location</div>
-          <input id="ingest-location" class="select" style="border-radius:12px;" placeholder="TEST-LOC" required />
-        </div>
-
-        <div class="metric-block">
-          <div class="metric-label">Uptime</div>
-          <input id="ingest-uptime" class="select" style="border-radius:12px;" placeholder="99.9" />
-        </div>
-
-        <div class="metric-block">
-          <div class="metric-label">Conversion</div>
-          <input id="ingest-conversion" class="select" style="border-radius:12px;" placeholder="12.3" />
-        </div>
-
-        <div class="metric-block">
-          <div class="metric-label">Response (ms)</div>
-          <input id="ingest-response" class="select" style="border-radius:12px;" placeholder="180" />
-        </div>
-
-        <div class="metric-block">
-          <div class="metric-label">Quotes</div>
-          <input id="ingest-quotes" class="select" style="border-radius:12px;" placeholder="3" />
-        </div>
-
-        <div class="metric-block">
-          <div class="metric-label">Integrity</div>
-          <select id="ingest-integrity" class="select" style="border-radius:12px;">
-            <option value="ok" selected>ok</option>
-            <option value="degraded">degraded</option>
-            <option value="critical">critical</option>
-            <option value="unknown">unknown</option>
+      <div class="control compact">
+        <div style="display:flex;align-items:center;gap:10px;flex:1;">
+          <label>Stale</label>
+          <select id="staleSel" style="width:90px">
+            <option value="5">5m</option>
+            <option value="10" selected>10m</option>
+            <option value="30">30m</option>
+            <option value="60">60m</option>
           </select>
         </div>
-
-        <div style="grid-column:1 / -1;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-          <button class="btn btn-primary" type="submit">Send Ingest</button>
-          <span id="ingest-status" class="chip-label"></span>
+        <div class="toggle">
+          <input id="onlyStaleChk" type="checkbox" />
+          <span>only stale</span>
         </div>
-      </form>
+      </div>
+
+      <button id="loadBtn" class="btn primary" type="button">Load</button>
     </div>
 
-    <div class="section-title">Locations</div>
-    <div class="list" id="locations-list"></div>
-    <div id="empty-state" class="empty" style="display:none;">
-      No location tiles found yet. Once Matrix installs send data, tiles will appear here.
+    <div class="meta-row">
+      <button id="csvBtn" class="btn secondary" type="button">Export CSV</button>
+      <span id="metaText" class="td-muted">—</span>
+      <span class="pill"><span class="dot"></span> Engine · Sentinel · Matrix · 24/7 underlay</span>
+      <span class="pill" id="lastRefreshPill" style="display:none;"></span>
     </div>
+
+    <div class="summary">
+      <div class="card">
+        <div class="k">Locations</div>
+        <div class="v" id="sumLocations">0</div>
+      </div>
+      <div class="card">
+        <div class="k">Critical</div>
+        <div class="v" id="sumCritical">0</div>
+      </div>
+      <div class="card">
+        <div class="k">Degraded</div>
+        <div class="v" id="sumDegraded">0</div>
+      </div>
+      <div class="card">
+        <div class="k">OK</div>
+        <div class="v" id="sumOk">0</div>
+      </div>
+      <div class="card">
+        <div class="k">Stale</div>
+        <div class="v" id="sumStale">0</div>
+        <div class="h" id="sumStaleHelp">—</div>
+      </div>
+    </div>
+
+    <div class="section-head">
+      <h2>Locations</h2>
+      <div class="tip">Tip: use filters to isolate stale or degraded installs</div>
+    </div>
+
+    <div id="locList" class="loc-list"></div>
+    <div id="locEmpty" class="empty" style="display:none;">No locations match your current filters.</div>
+
+    <div class="section-head" style="margin-top:18px;">
+      <h2>Recent Ingests</h2>
+      <div class="tip">Sorted newest → oldest</div>
+    </div>
+
+    <div class="table">
+      <table>
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Account</th>
+            <th>Location</th>
+            <th>Uptime</th>
+            <th>Conv</th>
+            <th>Resp</th>
+            <th>Quotes</th>
+            <th>Integrity</th>
+            <th>Run ID</th>
+            <th>Source</th>
+          </tr>
+        </thead>
+        <tbody id="recentBody"></tbody>
+      </table>
+    </div>
+
+    <div id="recentEmpty" class="empty" style="display:none;">No recent metric rows found.</div>
   </div>
 
   <script>
     const API_BASE = "/.netlify/functions";
 
-    const refreshSelect = document.getElementById("refresh-select");
-    const limitSelect = document.getElementById("limit-select");
-    const loadBtn = document.getElementById("load-btn");
-    const loadMeta = document.getElementById("load-meta");
-    const logoutBtn = document.getElementById("logout-btn");
+    const el = (id) => document.getElementById(id);
 
-    const summaryLocations = document.getElementById("summary-locations");
-    const summaryIndex = document.getElementById("summary-index");
-    const summaryRecent = document.getElementById("summary-recent");
-    const summaryHealth = document.getElementById("summary-health");
+    const refreshSel = el("refreshSel");
+    const limitSel = el("limitSel");
+    const searchInp = el("searchInp");
+    const integritySel = el("integritySel");
+    const staleSel = el("staleSel");
+    const onlyStaleChk = el("onlyStaleChk");
+    const loadBtn = el("loadBtn");
+    const csvBtn = el("csvBtn");
+    const metaText = el("metaText");
+    const lastRefreshPill = el("lastRefreshPill");
 
-    const locationsList = document.getElementById("locations-list");
-    const emptyState = document.getElementById("empty-state");
+    const sumLocations = el("sumLocations");
+    const sumCritical = el("sumCritical");
+    const sumDegraded = el("sumDegraded");
+    const sumOk = el("sumOk");
+    const sumStale = el("sumStale");
+    const sumStaleHelp = el("sumStaleHelp");
 
-    const ingestForm = document.getElementById("ingest-form");
-    const ingestStatus = document.getElementById("ingest-status");
-    const ingestLocation = document.getElementById("ingest-location");
-    const ingestUptime = document.getElementById("ingest-uptime");
-    const ingestConversion = document.getElementById("ingest-conversion");
-    const ingestResponse = document.getElementById("ingest-response");
-    const ingestQuotes = document.getElementById("ingest-quotes");
-    const ingestIntegrity = document.getElementById("ingest-integrity");
+    const locList = el("locList");
+    const locEmpty = el("locEmpty");
+
+    const recentBody = el("recentBody");
+    const recentEmpty = el("recentEmpty");
+
+    const logoutBtn = el("logoutBtn");
 
     let refreshTimer = null;
+    let lastData = null;
 
-    function badgeClass(integrity) {
-      const s = String(integrity || "unknown").toLowerCase();
-      if (s === "ok") return "badge badge-ok";
-      if (s === "degraded") return "badge badge-degraded";
-      if (s === "critical") return "badge badge-critical";
-      return "badge badge-unknown";
-    }
-
-    function normIntegrity(integrity) {
-      const s = String(integrity || "unknown").toLowerCase();
+    function normIntegrity(v){
+      const s = String(v || "unknown").toLowerCase().trim();
       if (s === "ok") return "ok";
       if (s === "degraded") return "degraded";
       if (s === "critical") return "critical";
       return "unknown";
     }
-
-    function rank(integrity) {
-      const s = normIntegrity(integrity);
-      if (s === "ok") return 0;
-      if (s === "unknown") return 1;
-      if (s === "degraded") return 2;
+    function integrityRank(v){
+      const s = normIntegrity(v);
       if (s === "critical") return 3;
-      return 1;
+      if (s === "degraded") return 2;
+      if (s === "unknown") return 1;
+      return 0; // ok
+    }
+    function badgeClass(integrity, isStale){
+      if (isStale) return "badge b-stale";
+      const s = normIntegrity(integrity);
+      if (s === "ok") return "badge b-ok";
+      if (s === "degraded") return "badge b-warn";
+      if (s === "critical") return "badge b-crit";
+      return "badge b-unk";
+    }
+    function labelFor(integrity, isStale){
+      if (isStale) return "Stale";
+      const s = normIntegrity(integrity);
+      if (s === "ok") return "OK";
+      if (s === "degraded") return "Degraded";
+      if (s === "critical") return "Critical";
+      return "Unknown";
     }
 
-    async function loadData() {
-      const limit = Number(limitSelect.value || 50);
-      loadBtn.disabled = true;
-      loadBtn.textContent = "Loading...";
-      loadMeta.textContent = "";
+    function minutesBetween(nowMs, iso){
+      if (!iso) return Infinity;
+      const t = new Date(iso).getTime();
+      if (!Number.isFinite(t)) return Infinity;
+      return (nowMs - t) / 60000;
+    }
 
-      try {
-        const res = await fetch(
-          `${API_BASE}/acx-matrix-summary?limit=${encodeURIComponent(limit)}`
-        );
-        if (!res.ok) throw new Error("Failed to load Matrix summary");
+    function fmtAgo(mins){
+      if (!Number.isFinite(mins)) return "—";
+      if (mins < 1) return "just now";
+      if (mins < 60) return `${Math.floor(mins)}m ago`;
+      const h = Math.floor(mins / 60);
+      const m = Math.floor(mins % 60);
+      return m ? `${h}h ${m}m ago` : `${h}h ago`;
+    }
+
+    function safeNum(v){
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    }
+
+    function sparkSVG(values, stroke){
+      const W = 96 - 16;  // inner
+      const H = 56 - 22;
+      const padX = 0;
+      const padY = 0;
+
+      const vals = (Array.isArray(values) ? values : []).map(Number).filter((n) => Number.isFinite(n));
+      if (vals.length < 2){
+        return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><polyline fill="none" stroke="${stroke}" stroke-width="2" opacity="0.55" points="0,${H/2} ${W},${H/2}" /></svg>`;
+      }
+
+      let min = Math.min(...vals);
+      let max = Math.max(...vals);
+      if (min === max){ min -= 1; max += 1; }
+
+      const step = W / (vals.length - 1);
+      const pts = vals.map((v, i) => {
+        const x = padX + i * step;
+        const y = padY + (H - ((v - min) / (max - min)) * H);
+        return `${x.toFixed(2)},${y.toFixed(2)}`;
+      }).join(" ");
+
+      return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><polyline fill="none" stroke="${stroke}" stroke-width="2" points="${pts}" /></svg>`;
+    }
+
+    function deriveSeriesFor(loc, seriesObj){
+      const arr = seriesObj && seriesObj[loc] ? seriesObj[loc] : [];
+      const tail = arr.slice(-24);
+      return {
+        uptime: tail.map(p => safeNum(p.uptime)),
+        conv: tail.map(p => safeNum(p.conv)),
+        resp: tail.map(p => safeNum(p.resp)),
+      };
+    }
+
+    function downloadCSV(filename, rows){
+      const esc = (v) => {
+        const s = String(v ?? "");
+        if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+        return s;
+      };
+      const csv = rows.map(r => r.map(esc).join(",")).join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function applyFilters(locations){
+      const now = Date.now();
+      const q = String(searchInp.value || "").trim().toLowerCase();
+      const integFilter = String(integritySel.value || "all").toLowerCase();
+      const staleMins = Number(staleSel.value || 10);
+      const onlyStale = !!onlyStaleChk.checked;
+
+      return (locations || [])
+        .map(t => {
+          const mins = minutesBetween(now, t.last_seen);
+          const isStale = mins > staleMins;
+          return { ...t, _mins: mins, _isStale: isStale };
+        })
+        .filter(t => t && t.location)
+        .filter(t => {
+          if (q){
+            const hay = `${t.account || ""} ${t.location || ""}`.toLowerCase();
+            if (!hay.includes(q)) return false;
+          }
+          if (integFilter !== "all"){
+            if (normIntegrity(t.integrity) !== integFilter) return false;
+          }
+          if (onlyStale && !t._isStale) return false;
+          return true;
+        })
+        .sort((a,b) => {
+          // worst-first: stale first, then integrity, then newest seen
+          if (a._isStale !== b._isStale) return a._isStale ? -1 : 1;
+          const ra = integrityRank(a.integrity);
+          const rb = integrityRank(b.integrity);
+          if (ra !== rb) return rb - ra;
+          return (new Date(b.last_seen).getTime() || 0) - (new Date(a.last_seen).getTime() || 0);
+        });
+    }
+
+    function render(locations, recent, series, meta){
+      const now = Date.now();
+      const staleMins = Number(staleSel.value || 10);
+
+      // summary counts are based on ALL tiles, not filtered view
+      const tiles = Array.isArray(locations) ? locations.filter(x => x && x.location) : [];
+      let cCrit=0,cDeg=0,cOk=0,cUnk=0,cStale=0;
+
+      for (const t of tiles){
+        const mins = minutesBetween(now, t.last_seen);
+        const isStale = mins > staleMins;
+        if (isStale) cStale++;
+        const s = normIntegrity(t.integrity);
+        if (s === "critical") cCrit++;
+        else if (s === "degraded") cDeg++;
+        else if (s === "ok") cOk++;
+        else cUnk++;
+      }
+
+      sumLocations.textContent = String(tiles.length);
+      sumCritical.textContent = String(cCrit);
+      sumDegraded.textContent = String(cDeg);
+      sumOk.textContent = String(cOk);
+      sumStale.textContent = String(cStale);
+      sumStaleHelp.textContent = `${staleMins}m stale threshold`;
+
+      const filtered = applyFilters(tiles);
+
+      locList.innerHTML = "";
+      locEmpty.style.display = filtered.length ? "none" : "block";
+
+      for (const t of filtered){
+        const mins = t._mins ?? minutesBetween(now, t.last_seen);
+        const isStale = !!t._isStale;
+        const acct = String(t.account || "ACX");
+        const loc = String(t.location || "");
+        const ago = fmtAgo(mins);
+
+        const uptime = safeNum(t.uptime);
+        const conv = safeNum(t.conversion);
+        const resp = safeNum(t.response_ms);
+        const quotes = safeNum(t.quotes_recovered);
+
+        const s = deriveSeriesFor(loc, series || {});
+        const row = document.createElement("div");
+        row.className = "loc";
+
+        row.innerHTML = `
+          <div class="main">
+            <div class="acct">${acct}</div>
+            <div class="id">${loc}</div>
+            <div class="sub">${ago}${isStale ? " • stale" : ""}</div>
+          </div>
+
+          <div class="metric">
+            <div class="k">Uptime</div>
+            <div class="v">${uptime}</div>
+          </div>
+
+          <div class="metric">
+            <div class="k">Conv</div>
+            <div class="v">${conv}</div>
+          </div>
+
+          <div class="metric">
+            <div class="k">Resp</div>
+            <div class="v">${resp}</div>
+          </div>
+
+          <div class="metric">
+            <div class="k">Quotes</div>
+            <div class="v">${quotes}</div>
+          </div>
+
+          <div class="charts">
+            <div class="mini">
+              <div class="k">Upt</div>
+              ${sparkSVG(s.uptime, "rgba(34,197,94,.9)")}
+            </div>
+            <div class="mini">
+              <div class="k">Conv</div>
+              ${sparkSVG(s.conv, "rgba(59,130,246,.9)")}
+            </div>
+            <div class="mini">
+              <div class="k">Resp</div>
+              ${sparkSVG(s.resp, "rgba(251,191,36,.9)")}
+            </div>
+          </div>
+
+          <div class="${badgeClass(t.integrity, isStale)}">${labelFor(t.integrity, isStale)}</div>
+        `;
+
+        locList.appendChild(row);
+      }
+
+      // Recent table (already “metrics-only” from your summary function)
+      const rows = Array.isArray(recent) ? recent : [];
+      recentBody.innerHTML = "";
+      recentEmpty.style.display = rows.length ? "none" : "block";
+
+      for (const r of rows){
+        const tr = document.createElement("tr");
+        const ts = r.ts ? new Date(r.ts).toLocaleString() : "—";
+        const acct = String(r.account || "ACX");
+        const loc = String(r.location || "");
+        const uptime = safeNum(r.uptime);
+        const conv = safeNum(r.conversion);
+        const resp = safeNum(r.response_ms);
+        const quotes = safeNum(r.quotes_recovered);
+        const integ = normIntegrity(r.integrity || r.acx_integrity);
+        const run = String(r.run_id || "");
+        const src = String(r.source || "");
+
+        const badge =
+          integ === "ok" ? `<span class="badge b-ok">OK</span>` :
+          integ === "degraded" ? `<span class="badge b-warn">Degraded</span>` :
+          integ === "critical" ? `<span class="badge b-crit">Critical</span>` :
+          `<span class="badge b-unk">Unknown</span>`;
+
+        tr.innerHTML = `
+          <td class="td-muted">${ts}</td>
+          <td>${acct}</td>
+          <td class="td-mono">${loc}</td>
+          <td>${uptime}</td>
+          <td>${conv}</td>
+          <td>${resp}</td>
+          <td>${quotes}</td>
+          <td>${badge}</td>
+          <td class="td-mono">${run}</td>
+          <td class="td-muted">${src}</td>
+        `;
+        recentBody.appendChild(tr);
+      }
+
+      const indexCount = Number(meta && meta.index_count || 0);
+      metaText.textContent = `${rows.length} recent rows • ${staleMins}m stale threshold • ${indexCount} index events`;
+
+      const nowStr = new Date().toLocaleTimeString();
+      lastRefreshPill.style.display = "inline-flex";
+      lastRefreshPill.className = "pill";
+      lastRefreshPill.textContent = `Last refresh: ${nowStr}`;
+
+      lastData = { locations: tiles, recent: rows, series: series || {}, meta: meta || {} };
+    }
+
+    async function loadData(){
+      const limit = Math.max(1, Math.min(500, Number(limitSel.value || 100)));
+      loadBtn.disabled = true;
+      loadBtn.textContent = "Loading…";
+
+      try{
+        const res = await fetch(`${API_BASE}/acx-matrix-summary?limit=${encodeURIComponent(limit)}`, { method: "GET" });
+        if (!res.ok) throw new Error("Failed to load summary");
         const data = await res.json();
 
         const locations = Array.isArray(data.locations) ? data.locations : [];
         const recent = Array.isArray(data.recent) ? data.recent : [];
-        const indexCount = Number(data?.meta?.index_count || 0);
+        const series = data.series && typeof data.series === "object" ? data.series : {};
+        const meta = data.meta && typeof data.meta === "object" ? data.meta : {};
 
-        renderDashboard({ locations, recentCount: recent.length, indexCount });
-        loadMeta.textContent = `${recent.length} recent rows`;
-      } catch (e) {
+        render(locations, recent, series, meta);
+      } catch(e){
         console.error(e);
-        loadMeta.textContent = "Error loading Matrix data";
-      } finally {
+        metaText.textContent = "Error loading Matrix data";
+      } finally{
         loadBtn.disabled = false;
         loadBtn.textContent = "Load";
       }
     }
 
-    function renderDashboard({ locations, recentCount, indexCount }) {
-      const tiles = (locations || []).filter((x) => x && x.location);
-
-      summaryLocations.textContent = String(tiles.length);
-      summaryRecent.textContent = String(recentCount || 0);
-      summaryIndex.textContent = String(indexCount || 0);
-
-      if (!tiles.length) {
-        locationsList.innerHTML = "";
-        emptyState.style.display = "block";
-        summaryHealth.textContent = "unknown";
-        return;
-      }
-
-      emptyState.style.display = "none";
-
-      let worst = "ok";
-      for (const t of tiles) {
-        const i = normIntegrity(t.integrity);
-        if (rank(i) > rank(worst)) worst = i;
-      }
-      summaryHealth.textContent = worst;
-
-      locationsList.innerHTML = "";
-
-      for (const t of tiles) {
-        const location = String(t.location || "");
-        const account = String(t.account || "ACX");
-        const lastSeen = t.last_seen ? new Date(t.last_seen).toLocaleString() : "—";
-
-        const uptime = Number(t.uptime || 0);
-        const conversion = Number(t.conversion || 0);
-        const responseMs = Number(t.response_ms || 0);
-        const quotes = Number(t.quotes_recovered || 0);
-
-        const card = document.createElement("div");
-        card.className = "loc-card";
-
-        const main = document.createElement("div");
-        main.className = "loc-main";
-        main.innerHTML = `
-          <div class="loc-name">${location}</div>
-          <div class="loc-sub">${account} · tiles</div>
-          <div class="loc-sub">Last seen: ${lastSeen}</div>
-        `;
-        card.appendChild(main);
-
-        const m1 = document.createElement("div");
-        m1.className = "metric-block";
-        m1.innerHTML = `
-          <div class="metric-label">Uptime</div>
-          <div class="metric-value">${uptime}</div>
-        `;
-        card.appendChild(m1);
-
-        const m2 = document.createElement("div");
-        m2.className = "metric-block";
-        m2.innerHTML = `
-          <div class="metric-label">Conversion</div>
-          <div class="metric-value">${conversion}</div>
-        `;
-        card.appendChild(m2);
-
-        const m3 = document.createElement("div");
-        m3.className = "metric-block";
-        m3.innerHTML = `
-          <div class="metric-label">Response (ms)</div>
-          <div class="metric-value">${responseMs}</div>
-        `;
-        card.appendChild(m3);
-
-        const trend = document.createElement("a");
-        trend.className = "trend-link";
-        trend.href = "#";
-        trend.textContent = `Quotes recovered: ${quotes}`;
-        card.appendChild(trend);
-
-        const badge = document.createElement("div");
-        badge.className = badgeClass(t.integrity);
-        badge.textContent = normIntegrity(t.integrity);
-        card.appendChild(badge);
-
-        locationsList.appendChild(card);
-      }
-    }
-
-    function setupAutoRefresh() {
-      if (refreshTimer) {
-        clearInterval(refreshTimer);
-        refreshTimer = null;
-      }
-      const secs = Number(refreshSelect.value || 0);
+    function setupAutoRefresh(){
+      if (refreshTimer){ clearInterval(refreshTimer); refreshTimer = null; }
+      const secs = Number(refreshSel.value || 0);
       if (!secs) return;
       refreshTimer = setInterval(loadData, secs * 1000);
     }
 
-    ingestForm?.addEventListener("submit", async (e) => {
-      e.preventDefault();
-
-      if (ingestStatus) ingestStatus.textContent = "Sending…";
-
-      const payload = {
-        account: "ACX",
-        location: String(ingestLocation?.value || "").trim(),
-        run_id: `form-${Date.now()}`,
-        acx_integrity: String(ingestIntegrity?.value || "unknown").trim(),
-        uptime: String(ingestUptime?.value || "").trim(),
-        conversion: String(ingestConversion?.value || "").trim(),
-        response_ms: String(ingestResponse?.value || "").trim(),
-        quotes_recovered: String(ingestQuotes?.value || "").trim(),
-      };
-
-      try {
-        const r = await fetch(`${API_BASE}/acx-matrix-ingest-form`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify(payload),
-        });
-
-        const text = await r.text();
-        if (!r.ok) throw new Error(text || "Ingest failed");
-
-        if (ingestStatus) ingestStatus.textContent = "Sent ✓";
-        await loadData();
-      } catch (err) {
-        console.error(err);
-        if (ingestStatus) ingestStatus.textContent = "Failed (see console)";
-      }
-    });
-
     loadBtn.addEventListener("click", loadData);
-    refreshSelect.addEventListener("change", setupAutoRefresh);
+    refreshSel.addEventListener("change", setupAutoRefresh);
+
+    // live filter rerender without refetch
+    const rerender = () => {
+      if (!lastData) return;
+      render(lastData.locations, lastData.recent, lastData.series, lastData.meta);
+    };
+    searchInp.addEventListener("input", rerender);
+    integritySel.addEventListener("change", rerender);
+    staleSel.addEventListener("change", rerender);
+    onlyStaleChk.addEventListener("change", rerender);
+    limitSel.addEventListener("change", () => { /* limit affects fetch */ });
+
+    csvBtn.addEventListener("click", () => {
+      if (!lastData) return;
+      const rows = [
+        ["timestamp","account","location","uptime","conversion","response_ms","quotes_recovered","integrity","run_id","source"]
+      ];
+      for (const r of (lastData.recent || [])){
+        rows.push([
+          r.ts || "",
+          r.account || "",
+          r.location || "",
+          String(r.uptime ?? ""),
+          String(r.conversion ?? ""),
+          String(r.response_ms ?? ""),
+          String(r.quotes_recovered ?? ""),
+          normIntegrity(r.integrity || r.acx_integrity),
+          r.run_id || "",
+          r.source || ""
+        ]);
+      }
+      downloadCSV(`acx-matrix-recent-${new Date().toISOString().slice(0,10)}.csv`, rows);
+    });
 
     logoutBtn.addEventListener("click", () => {
       window.location.href = "/matrix-logout";
     });
 
+    // initial
+    setupAutoRefresh();
     loadData();
   </script>
 </body>
