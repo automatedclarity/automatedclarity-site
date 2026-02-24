@@ -11,3 +11,15 @@
   to   = "/.netlify/functions/gate-matrix"
   status = 200
   force = true
+
+[[redirects]]
+  from = "/matrix.html"
+  to   = "/.netlify/functions/gate-matrix"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/"
+  to   = "/matrix"
+  status = 302
+  force = true
