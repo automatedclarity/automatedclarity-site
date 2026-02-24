@@ -1,13 +1,12 @@
 // functions/acx-matrix-ingest-form.js
-// Browser-safe ingest relay:
-// - Requires cookie session (same auth model as /matrix)
+// Browser-safe ingest relay (session required) + ECHO DEBUG
 // - Forwards to acx-matrix-webhook with x-acx-secret server-side
-// - Sends x-acx-source in a way that ALWAYS allows metric overwrite
+// - Echoes received + forwarded payload so we can prove what the browser sent
 
 import { requireSession } from "./_lib/session.js";
 
 const json = (obj, status = 200) =>
-  new Response(JSON.stringify(obj), {
+  new Response(JSON.stringify(obj, null, 2), {
     status,
     headers: {
       "Content-Type": "application/json",
@@ -64,6 +63,7 @@ export default async (req) => {
     return json({ ok: false, error: "Invalid JSON body" }, 400);
   }
 
+  // Accept multiple client naming styles so we DON'T drift later.
   const account = toStringSafe(
     pick(body, ["account", "account_name", "accountName", "AccountName"])
   );
@@ -91,10 +91,7 @@ export default async (req) => {
   );
 
   if (!account || !location) {
-    return json(
-      { ok: false, error: "Missing required fields: account, location" },
-      400
-    );
+    return json({ ok: false, error: "Missing required fields: account, location" }, 400);
   }
 
   const secret =
@@ -116,7 +113,7 @@ export default async (req) => {
     location,
     run_id,
     acx_integrity,
-    integrity: acx_integrity, // send both keys (no drift)
+    integrity: acx_integrity, // both keys
     uptime,
     response_ms,
     conversion,
@@ -129,21 +126,28 @@ export default async (req) => {
       "Content-Type": "application/json",
       "x-acx-secret": secret,
 
-      // EMPIRE: always treated as metric-writing source
+      // must allow metric overwrite in webhook
       "x-acx-source": "ingest",
-      "x-acx-source-detail": "ingest_form",
     },
     body: JSON.stringify(payload),
   });
 
-  const text = await r.text();
-
+  let upstreamText = "";
   try {
-    return json({ ok: true, forwarded: true, upstream: JSON.parse(text) }, r.status);
+    upstreamText = await r.text();
   } catch {
-    return new Response(text, {
-      status: r.status,
-      headers: { "Content-Type": "text/plain" },
-    });
+    upstreamText = "";
   }
+
+  // ✅ Return ECHO so we can prove what the browser actually sent
+  return json(
+    {
+      ok: r.ok,
+      status: r.status,
+      received_body: body,
+      forwarded_payload: payload,
+      upstream_raw: upstreamText,
+    },
+    r.status
+  );
 };
