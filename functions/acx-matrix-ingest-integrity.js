@@ -119,9 +119,9 @@ export default async (req) => {
         "Content-Type": "application/json",
         "x-acx-secret": secret,
 
-        // ✅ Critical: allow summary metric writes when metrics are included
-        // (and keep behavior consistent with curl)
-        "x-acx-source": "ingest",
+                // Do NOT allow metric writes from integrity-only posts
+        // (webhook will still update integrity when present)
+        "x-acx-source": "sentinel",
       },
       body: JSON.stringify(payload),
     });
