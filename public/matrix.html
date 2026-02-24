@@ -64,6 +64,7 @@
     }
     .btn:disabled{opacity:.6;cursor:not-allowed}
 
+    /* ✅ Better header layout: keep Load aligned with filters, and keep it from looking “detached” */
     .controls{
       display:grid;
       grid-template-columns: 160px 160px 1fr 160px 200px 110px;
@@ -100,6 +101,8 @@
       white-space:nowrap;
     }
     .control .toggle input{width:auto}
+
+    /* ✅ Meta row polish: keep pills aligned and prevent wrap chaos */
     .meta-row{
       display:flex;align-items:center;gap:12px;flex-wrap:wrap;
       margin-bottom:14px;
@@ -744,6 +747,23 @@
     staleSel.addEventListener("change", rerender);
     onlyStaleChk.addEventListener("change", rerender);
     limitSel.addEventListener("change", () => { /* limit affects fetch */ });
+
+    /* ✅ Quality-of-life:
+       - Enter in Search triggers Load (real-world expectation)
+       - Cmd/Ctrl+K focuses search
+       - Esc clears search filter */
+    searchInp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") loadData();
+      if (e.key === "Escape") { searchInp.value = ""; rerender(); }
+    });
+    window.addEventListener("keydown", (e) => {
+      const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+      if (mod && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        searchInp.focus();
+      }
+    });
 
     csvBtn.addEventListener("click", () => {
       if (!lastData) return;
