@@ -257,6 +257,51 @@
       </div>
     </div>
 
+    <div class="section-title">Ingest (browser → ingest-form)</div>
+    <div class="summary-card" style="margin-bottom: 16px;">
+      <form id="ingest-form" style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;align-items:end;">
+        <div class="metric-block">
+          <div class="metric-label">Location</div>
+          <input id="ingest-location" class="select" style="border-radius:12px;" placeholder="TEST-LOC" required />
+        </div>
+
+        <div class="metric-block">
+          <div class="metric-label">Uptime</div>
+          <input id="ingest-uptime" class="select" style="border-radius:12px;" placeholder="99.9" />
+        </div>
+
+        <div class="metric-block">
+          <div class="metric-label">Conversion</div>
+          <input id="ingest-conversion" class="select" style="border-radius:12px;" placeholder="12.3" />
+        </div>
+
+        <div class="metric-block">
+          <div class="metric-label">Response (ms)</div>
+          <input id="ingest-response" class="select" style="border-radius:12px;" placeholder="180" />
+        </div>
+
+        <div class="metric-block">
+          <div class="metric-label">Quotes</div>
+          <input id="ingest-quotes" class="select" style="border-radius:12px;" placeholder="3" />
+        </div>
+
+        <div class="metric-block">
+          <div class="metric-label">Integrity</div>
+          <select id="ingest-integrity" class="select" style="border-radius:12px;">
+            <option value="ok" selected>ok</option>
+            <option value="degraded">degraded</option>
+            <option value="critical">critical</option>
+            <option value="unknown">unknown</option>
+          </select>
+        </div>
+
+        <div style="grid-column:1 / -1;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+          <button class="btn btn-primary" type="submit">Send Ingest</button>
+          <span id="ingest-status" class="chip-label"></span>
+        </div>
+      </form>
+    </div>
+
     <div class="section-title">Locations</div>
     <div class="list" id="locations-list"></div>
     <div id="empty-state" class="empty" style="display:none;">
@@ -280,6 +325,15 @@
 
     const locationsList = document.getElementById("locations-list");
     const emptyState = document.getElementById("empty-state");
+
+    const ingestForm = document.getElementById("ingest-form");
+    const ingestStatus = document.getElementById("ingest-status");
+    const ingestLocation = document.getElementById("ingest-location");
+    const ingestUptime = document.getElementById("ingest-uptime");
+    const ingestConversion = document.getElementById("ingest-conversion");
+    const ingestResponse = document.getElementById("ingest-response");
+    const ingestQuotes = document.getElementById("ingest-quotes");
+    const ingestIntegrity = document.getElementById("ingest-integrity");
 
     let refreshTimer = null;
 
@@ -431,6 +485,41 @@
       if (!secs) return;
       refreshTimer = setInterval(loadData, secs * 1000);
     }
+
+    ingestForm?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+
+      if (ingestStatus) ingestStatus.textContent = "Sending…";
+
+      const payload = {
+        account: "ACX",
+        location: String(ingestLocation?.value || "").trim(),
+        run_id: `form-${Date.now()}`,
+        acx_integrity: String(ingestIntegrity?.value || "unknown").trim(),
+        uptime: String(ingestUptime?.value || "").trim(),
+        conversion: String(ingestConversion?.value || "").trim(),
+        response_ms: String(ingestResponse?.value || "").trim(),
+        quotes_recovered: String(ingestQuotes?.value || "").trim(),
+      };
+
+      try {
+        const r = await fetch(`${API_BASE}/acx-matrix-ingest-form`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(payload),
+        });
+
+        const text = await r.text();
+        if (!r.ok) throw new Error(text || "Ingest failed");
+
+        if (ingestStatus) ingestStatus.textContent = "Sent ✓";
+        await loadData();
+      } catch (err) {
+        console.error(err);
+        if (ingestStatus) ingestStatus.textContent = "Failed (see console)";
+      }
+    });
 
     loadBtn.addEventListener("click", loadData);
     refreshSelect.addEventListener("change", setupAutoRefresh);
