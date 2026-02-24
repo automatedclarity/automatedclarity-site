@@ -1,12 +1,8 @@
-// functions/gate-matrix.js
 import { readSession } from "./_lib/session.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-// Canonical dashboard file (single source of truth)
-const DASHBOARD_PATH = join(process.cwd(), "public", "matrix.html");
-// Backward-compat fallback (if it exists)
-const FALLBACK_PATH = join(process.cwd(), "public", "index.html");
+const MATRIX_PATH = join(process.cwd(), "public", "matrix.html");
 
 export default async (req) => {
   const sess = readSession(req);
@@ -22,13 +18,7 @@ export default async (req) => {
   }
 
   try {
-    let html = "";
-    try {
-      html = await readFile(DASHBOARD_PATH, "utf8");
-    } catch {
-      html = await readFile(FALLBACK_PATH, "utf8");
-    }
-
+    const html = await readFile(MATRIX_PATH, "utf8");
     return new Response(html, {
       status: 200,
       headers: {
