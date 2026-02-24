@@ -1,7 +1,7 @@
 # netlify.toml — ACX Console
 
 [build]
-  command = ""
+  command = "npm install"
   publish = "public"
 
 [functions]
