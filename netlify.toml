@@ -6,9 +6,9 @@
 
 [functions]
   directory = "functions"
+  node_bundler = "esbuild"
   external_node_modules = ["@netlify/blobs"]
 
-# Gate /matrix behind a server function (cookie auth)
 [[redirects]]
   from = "/matrix"
   to   = "/.netlify/functions/gate-matrix"
