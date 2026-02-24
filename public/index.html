@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>ACX Matrix — Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    :root {
+      --bg: #050816;
+      --bg-card: #0b1020;
+      --bg-card-soft: #11162a;
+      --text-main: #f9fafb;
+      --text-muted: #9ca3af;
+      --accent: #38bdf8;
+      --accent-soft: rgba(56, 189, 248, 0.12);
+      --danger: #f97373;
+      --danger-soft: rgba(248, 113, 113, 0.16);
+      --warn: #fbbf24;
+      --warn-soft: rgba(251, 191, 36, 0.16);
+      --ok: #4ade80;
+      --ok-soft: rgba(74, 222, 128, 0.16);
+      --border-subtle: #1f2933;
+      --radius-xl: 18px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+      background: radial-gradient(circle at top left, #111827 0, #020617 45%, #000000 100%);
+      color: var(--text-main);
+      min-height: 100vh;
+    }
+
+    .shell {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 24px 16px 40px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 18px;
+    }
+
+    .title-group h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+    }
+
+    .title-group p {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    .btn-ghost {
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      padding: 8px 14px;
+      font-size: 0.85rem;
+      background: rgba(15, 23, 42, 0.8);
+      color: var(--text-main);
+      cursor: pointer;
+    }
+
+    .controls {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+
+    .chip-label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-right: 4px;
+    }
+
+    .select,
+    .btn {
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      background: rgba(15, 23, 42, 0.9);
+      color: var(--text-main);
+      font-size: 0.8rem;
+      padding: 6px 10px;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #38bdf8, #a855f7);
+      border: none;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .summary-card {
+      background: radial-gradient(circle at top left, #1e293b 0, #020617 60%);
+      border-radius: var(--radius-xl);
+      padding: 12px 14px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+    }
+
+    .summary-label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+
+    .summary-value {
+      font-size: 1.25rem;
+      font-weight: 600;
+    }
+
+    .summary-help {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .section-title {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+      margin-top: 10px;
+    }
+
+    .list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .loc-card {
+      background: radial-gradient(circle at top left, #020617 0, #020617 60%);
+      border-radius: var(--radius-xl);
+      padding: 14px 16px;
+      border: 1px solid rgba(31, 41, 55, 0.9);
+      display: grid;
+      grid-template-columns: minmax(0, 2fr) repeat(3, minmax(0, 1fr)) auto;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .loc-main {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .loc-name {
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+
+    .loc-sub {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+
+    .metric-block {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .metric-label {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+
+    .metric-value {
+      font-size: 0.9rem;
+      font-weight: 500;
+    }
+
+    .trend-link {
+      font-size: 0.75rem;
+      color: var(--accent);
+      text-decoration: none;
+      opacity: 0.9;
+    }
+
+    .badge {
+      font-size: 0.7rem;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-weight: 500;
+      text-transform: lowercase;
+      border: 1px solid transparent;
+      justify-self: flex-end;
+    }
+
+    .badge-optimal {
+      background: var(--ok-soft);
+      color: var(--ok);
+      border-color: rgba(74, 222, 128, 0.4);
+    }
+
+    .badge-warning {
+      background: var(--warn-soft);
+      color: var(--warn);
+      border-color: rgba(251, 191, 36, 0.4);
+    }
+
+    .badge-critical {
+      background: var(--danger-soft);
+      color: var(--danger);
+      border-color: rgba(248, 113, 113, 0.4);
+    }
+
+    .tab-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 0.75rem;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+    }
+
+    .tab-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: #22c55e;
+    }
+
+    .empty {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      padding: 16px;
+      border-radius: var(--radius-xl);
+      border: 1px dashed rgba(55, 65, 81, 0.8);
+      background: rgba(15, 23, 42, 0.6);
+      margin-top: 8px;
+    }
+
+    @media (max-width: 900px) {
+      .summary-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .loc-card {
+        grid-template-columns: 1.6fr 1.2fr 1.2fr;
+        grid-template-rows: auto auto;
+      }
+      .metric-block:nth-child(3),
+      .metric-block:nth-child(4),
+      .badge {
+        justify-self: flex-start;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .loc-card {
+        grid-template-columns: 1.6fr 1.2fr;
+        grid-template-rows: auto auto auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="title-group">
+        <h1>ACX Matrix — Dashboard</h1>
+        <p>Live integrity &amp; ACX usage across locations (internal only)</p>
+      </div>
+      <button class="btn-ghost" type="button">Log out</button>
+    </header>
+
+    <div class="controls">
+      <div>
+        <span class="chip-label">Auto-refresh</span>
+        <select id="refresh-select" class="select">
+          <option value="0">Off</option>
+          <option value="10">10s</option>
+          <option value="30">30s</option>
+          <option value="60">60s</option>
+        </select>
+      </div>
+      <div>
+        <span class="chip-label">Recent rows</span>
+        <select id="limit-select" class="select">
+          <option value="25">25</option>
+          <option value="50" selected>50</option>
+          <option value="100">100</option>
+        </select>
+      </div>
+      <button id="load-btn" class="btn btn-primary" type="button">Load</button>
+      <span id="load-meta" class="chip-label"></span>
+      <span class="tab-pill">
+        <span class="tab-dot"></span>
+        Engine · Sentinel · Matrix · 24/7 underlay
+      </span>
+    </div>
+
+    <div class="summary-grid" id="summary-grid">
+      <div class="summary-card">
+        <div class="summary-label">Locations (seen by Matrix)</div>
+        <div class="summary-value" id="summary-locations">0</div>
+        <div class="summary-help">Installs sending data into ACX</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Contacts through ACX (this slice)</div>
+        <div class="summary-value" id="summary-contacts">0</div>
+        <div class="summary-help">People who chose to enter ACX</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Dormant pool (90+ days)</div>
+        <div class="summary-value" id="summary-dormant">0</div>
+        <div class="summary-help">Perfect for Octane-style nudges</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Sentinel health</div>
+        <div class="summary-value" id="summary-health">—</div>
+        <div class="summary-help">Overall status across recent runs</div>
+      </div>
+    </div>
+
+    <div class="section-title">Locations</div>
+    <div class="list" id="locations-list"></div>
+    <div id="empty-state" class="empty" style="display:none;">
+      No Matrix runs found yet. Once ACX installs start sending data, you'll see
+      Engine usage, Sentinel health, and Matrix recommendations here.
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = "/.netlify/functions";
+
+    const refreshSelect = document.getElementById("refresh-select");
+    const limitSelect = document.getElementById("limit-select");
+    const loadBtn = document.getElementById("load-btn");
+    const loadMeta = document.getElementById("load-meta");
+
+    const summaryLocations = document.getElementById("summary-locations");
+    const summaryContacts = document.getElementById("summary-contacts");
+    const summaryDormant = document.getElementById("summary-dormant");
+    const summaryHealth = document.getElementById("summary-health");
+
+    const locationsList = document.getElementById("locations-list");
+    const emptyState = document.getElementById("empty-state");
+
+    let refreshTimer = null;
+
+    function healthBadgeClass(status) {
+      const s = (status || "unknown").toLowerCase();
+      if (s === "ok" || s === "optimal") return "badge badge-optimal";
+      if (s === "warning" || s === "degraded") return "badge badge-warning";
+      if (s === "critical") return "badge badge-critical";
+      return "badge badge-warning";
+    }
+
+    function healthLabel(status) {
+      const s = (status || "unknown").toLowerCase();
+      if (s === "ok") return "optimal";
+      if (s === "warning") return "warning";
+      if (s === "critical") return "critical";
+      if (s === "degraded") return "degraded";
+      return "unknown";
+    }
+
+    function groupByLocation(runs) {
+      const map = new Map();
+      for (const run of runs) {
+        const loc = run.location || "Unknown";
+        if (!map.has(loc)) {
+          map.set(loc, []);
+        }
+        map.get(loc).push(run);
+      }
+      return map;
+    }
+
+    async function loadData() {
+      const limit = Number(limitSelect.value || 50);
+      loadBtn.disabled = true;
+      loadBtn.textContent = "Loading...";
+      loadMeta.textContent = "";
+
+      try {
+        const res = await fetch(
+          `${API_BASE}/acx-matrix-recent?limit=${encodeURIComponent(limit)}`
+        );
+        if (!res.ok) throw new Error("Failed to load Matrix data");
+        const json = await res.json();
+        const runs = Array.isArray(json.runs) ? json.runs : [];
+
+        renderDashboard(runs);
+        loadMeta.textContent = `${runs.length} recent rows`;
+      } catch (e) {
+        console.error(e);
+        loadMeta.textContent = "Error loading Matrix data";
+      } finally {
+        loadBtn.disabled = false;
+        loadBtn.textContent = "Load";
+      }
+    }
+
+    function renderDashboard(runs) {
+      if (!runs.length) {
+        locationsList.innerHTML = "";
+        emptyState.style.display = "block";
+        summaryLocations.textContent = "0";
+        summaryContacts.textContent = "0";
+        summaryDormant.textContent = "0";
+        summaryHealth.textContent = "—";
+        return;
+      }
+
+      emptyState.style.display = "none";
+
+      const byLocation = groupByLocation(runs);
+      summaryLocations.textContent = byLocation.size.toString();
+
+      let totalContacts = 0;
+      let totalDormant = 0;
+      let worstStatus = "ok";
+
+      const statusRank = {
+        ok: 0,
+        optimal: 0,
+        warning: 1,
+        degraded: 1,
+        critical: 2,
+        unknown: 1
+      };
+
+      locationsList.innerHTML = "";
+
+      for (const [location, locRuns] of byLocation.entries()) {
+        // Use most recent run per location
+        const latest = locRuns[0];
+
+        const contacts = Number(
+          latest?.engine?.contacts_through_acx || 0
+        );
+        const listSize = Number(latest?.engine?.list_size_total || 0);
+        const dormant = Number(latest?.engine?.dormant_90d || 0);
+        const status = latest?.sentinel?.status || "unknown";
+
+        totalContacts += contacts;
+        totalDormant += dormant;
+
+        const statusKey = status.toLowerCase();
+        if (
+          statusRank[statusKey] !== undefined &&
+          statusRank[statusKey] > statusRank[worstStatus]
+        ) {
+          worstStatus = statusKey;
+        }
+
+        const card = document.createElement("div");
+        card.className = "loc-card";
+
+        const main = document.createElement("div");
+        main.className = "loc-main";
+        main.innerHTML = `
+          <div class="loc-name">${location}</div>
+          <div class="loc-sub">${
+            latest.account || "ACX Install"
+          } · ${latest.period || "periodic"}</div>
+          <div class="loc-sub">Last run: ${
+            latest.created_at ? new Date(latest.created_at).toLocaleString() : "—"
+          }</div>
+        `;
+        card.appendChild(main);
+
+        const m1 = document.createElement("div");
+        m1.className = "metric-block";
+        m1.innerHTML = `
+          <div class="metric-label">Contacts through ACX</div>
+          <div class="metric-value">${contacts}</div>
+        `;
+        card.appendChild(m1);
+
+        const m2 = document.createElement("div");
+        m2.className = "metric-block";
+        m2.innerHTML = `
+          <div class="metric-label">List in ACX</div>
+          <div class="metric-value">${listSize}</div>
+        `;
+        card.appendChild(m2);
+
+        const m3 = document.createElement("div");
+        m3.className = "metric-block";
+        m3.innerHTML = `
+          <div class="metric-label">Dormant (90+ days)</div>
+          <div class="metric-value">${dormant}</div>
+        `;
+        card.appendChild(m3);
+
+        const trend = document.createElement("a");
+        trend.className = "trend-link";
+        trend.href = "#";
+        trend.textContent = latest.matrix?.summary || "View summary";
+        card.appendChild(trend);
+
+        const badge = document.createElement("div");
+        badge.className = healthBadgeClass(status);
+        badge.textContent = healthLabel(status);
+        card.appendChild(badge);
+
+        locationsList.appendChild(card);
+      }
+
+      summaryContacts.textContent = totalContacts.toString();
+      summaryDormant.textContent = totalDormant.toString();
+      summaryHealth.textContent = healthLabel(worstStatus);
+    }
+
+    function setupAutoRefresh() {
+      if (refreshTimer) {
+        clearInterval(refreshTimer);
+        refreshTimer = null;
+      }
+      const secs = Number(refreshSelect.value || 0);
+      if (!secs) return;
+      refreshTimer = setInterval(loadData, secs * 1000);
+    }
+
+    loadBtn.addEventListener("click", loadData);
+    refreshSelect.addEventListener("change", setupAutoRefresh);
+
+    // Initial load
+    loadData();
+  </script>
+</body>
+</html>
