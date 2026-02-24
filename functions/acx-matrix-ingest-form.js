@@ -1,8 +1,7 @@
 // functions/acx-matrix-ingest-form.js
-// Browser-safe ingest relay:
-// - Requires cookie session (same auth model as /matrix)
-// - Forwards to acx-matrix-webhook with x-acx-secret server-side
-// - Forces x-acx-source = "ingest" so metrics CAN write into per-location summaries
+// Browser-safe ingest relay (cookie session required)
+// - Forwards to acx-matrix-webhook server-side with x-acx-secret
+// - MUST send x-acx-source: ingest (so webhook can write summary metrics)
 
 import { requireSession } from "./_lib/session.js";
 
@@ -41,14 +40,19 @@ function pick(obj, keys) {
   return "";
 }
 
-function toStringSafe(v) {
+function toStr(v) {
   if (v === undefined || v === null) return "";
   return String(v).trim();
 }
 
+// keep numeric strings clean (webhook already parses %, commas etc)
+function toNumStr(v) {
+  const s = toStr(v);
+  return s;
+}
+
 export default async (req) => {
-  if (req.method !== "POST")
-    return json({ ok: false, error: "Method Not Allowed" }, 405);
+  if (req.method !== "POST") return json({ ok: false, error: "Method Not Allowed" }, 405);
 
   const deny = await enforceSession(req);
   if (deny) return deny;
@@ -60,46 +64,41 @@ export default async (req) => {
     return json({ ok: false, error: "Invalid JSON body" }, 400);
   }
 
-  const account =
-    toStringSafe(pick(body, ["account", "account_name", "accountName"])) || "ACX";
+  const account = toStr(pick(body, ["account", "account_name", "accountName"])) || "ACX";
 
-  const location = toStringSafe(
+  const location = toStr(
     pick(body, ["location", "location_id", "locationId"])
   );
 
   const run_id =
-    toStringSafe(pick(body, ["run_id", "runId", "test_run_id", "testRunId"])) ||
+    toStr(pick(body, ["run_id", "runId", "test_run_id", "testRunId"])) ||
     `run_INGEST_FORM_${Date.now()}`;
 
-  // IMPORTANT: webhook accepts acx_integrity OR integrity
-  const acx_integrity = toStringSafe(
-    pick(body, ["acx_integrity", "integrity", "integrity_status"])
-  );
+  // LOCK: dashboard + summary expect acx_integrity / integrity, values ok|degraded|critical|unknown
+  const acx_integrity = toStr(
+    pick(body, ["acx_integrity", "integrity", "integrity_status", "integrityStatus"])
+  ).toLowerCase();
 
-  const uptime = toStringSafe(pick(body, ["uptime"]));
-  const response_ms = toStringSafe(pick(body, ["response_ms"]));
-  const conversion = toStringSafe(pick(body, ["conversion"]));
-  const quotes_recovered = toStringSafe(pick(body, ["quotes_recovered"]));
+  const uptime = toNumStr(pick(body, ["uptime", "uptime_pct", "uptimePct"]));
+  const response_ms = toNumStr(pick(body, ["response_ms", "responseMs", "response"]));
+  const conversion = toNumStr(pick(body, ["conversion", "conv"]));
+  const quotes_recovered = toNumStr(
+    pick(body, ["quotes_recovered", "quotesRecovered", "quotes"])
+  );
 
   if (!location) {
     return json({ ok: false, error: "Missing required field: location" }, 400);
   }
 
-  const secret =
-    process.env.ACX_SECRET ||
-    process.env.ACX_WEBHOOK_SECRET ||
-    process.env.ACX_MATRIX_SECRET ||
-    process.env.ACX_SHARED_SECRET ||
-    process.env.X_ACX_SECRET;
-
-  if (!secret) {
-    return json({ ok: false, error: "Server missing ACX secret env var" }, 500);
-  }
+  // SINGLE SOURCE OF TRUTH: ACX_SECRET (matches webhook + summary)
+  const secret = (process.env.ACX_SECRET || "").trim();
+  if (!secret) return json({ ok: false, error: "Server missing ACX_SECRET env var" }, 500);
 
   const origin = new URL(req.url).origin;
+
+  // Forward to the single writer
   const forwardUrl = `${origin}/.netlify/functions/acx-matrix-webhook`;
 
-  // Redundant "source" in body so webhook sees ingest even if header is altered
   const payload = {
     account,
     location,
@@ -109,7 +108,6 @@ export default async (req) => {
     response_ms,
     conversion,
     quotes_recovered,
-    source: "ingest",
   };
 
   const r = await fetch(forwardUrl, {
@@ -117,7 +115,8 @@ export default async (req) => {
     headers: {
       "Content-Type": "application/json",
       "x-acx-secret": secret,
-      "x-acx-source": "ingest", // ✅ THIS is the critical fix
+      // THIS IS THE FIX (was ingest_form). Must be EXACT "ingest".
+      "x-acx-source": "ingest",
     },
     body: JSON.stringify(payload),
   });
@@ -126,9 +125,6 @@ export default async (req) => {
   try {
     return json({ ok: r.ok, forwarded: true, upstream: JSON.parse(text) }, r.status);
   } catch {
-    return new Response(text, {
-      status: r.status,
-      headers: { "Content-Type": "text/plain", "Cache-Control": "no-store" },
-    });
+    return new Response(text, { status: r.status, headers: { "Content-Type": "text/plain" } });
   }
 };
