@@ -1,3 +1,8 @@
+// functions/gate-matrix.js
+// Gate Matrix behind session cookie auth.
+// If authed -> serve public/matrix.html
+// If not -> redirect to /matrix-login
+
 import { readSession } from "./_lib/session.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
