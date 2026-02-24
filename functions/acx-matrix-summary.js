@@ -15,7 +15,7 @@
 // - Netlify req.url is often RELATIVE → new URL(req.url) THROWS → lambda returns invalid response
 //   → use new URL(req.url, "https://console.automatedclarity.com")
 
-import { getStore } from "@netlify/blobs";
+import { getStore } from "@netlify/blobs/node";
 import { requireSession } from "./_lib/session.js";
 
 const json = (obj, status = 200) =>
