@@ -1,17 +1,15 @@
 // functions/acx-matrix-ingest-form.js
-// Browser-safe ingest relay (session required) + ECHO DEBUG
+// Browser-safe ingest relay:
+// - Requires cookie session (same auth model as /matrix)
 // - Forwards to acx-matrix-webhook with x-acx-secret server-side
-// - Echoes received + forwarded payload so we can prove what the browser sent
+// - Forces x-acx-source = "ingest" so metrics CAN write into per-location summaries
 
 import { requireSession } from "./_lib/session.js";
 
 const json = (obj, status = 200) =>
-  new Response(JSON.stringify(obj, null, 2), {
+  new Response(JSON.stringify(obj), {
     status,
-    headers: {
-      "Content-Type": "application/json",
-      "Cache-Control": "no-store",
-    },
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
 
 async function enforceSession(req) {
@@ -49,9 +47,8 @@ function toStringSafe(v) {
 }
 
 export default async (req) => {
-  if (req.method !== "POST") {
+  if (req.method !== "POST")
     return json({ ok: false, error: "Method Not Allowed" }, 405);
-  }
 
   const deny = await enforceSession(req);
   if (deny) return deny;
@@ -63,35 +60,29 @@ export default async (req) => {
     return json({ ok: false, error: "Invalid JSON body" }, 400);
   }
 
-  // Accept multiple client naming styles so we DON'T drift later.
-  const account = toStringSafe(
-    pick(body, ["account", "account_name", "accountName", "AccountName"])
-  );
+  const account =
+    toStringSafe(pick(body, ["account", "account_name", "accountName"])) || "ACX";
 
   const location = toStringSafe(
-    pick(body, ["location", "location_id", "locationId", "Location", "LocationId"])
+    pick(body, ["location", "location_id", "locationId"])
   );
 
   const run_id =
-    toStringSafe(
-      pick(body, ["run_id", "runId", "test_run_id", "testRunId", "TestRunID"])
-    ) || `run_INGEST_FORM_${Date.now()}`;
+    toStringSafe(pick(body, ["run_id", "runId", "test_run_id", "testRunId"])) ||
+    `run_INGEST_FORM_${Date.now()}`;
 
+  // IMPORTANT: webhook accepts acx_integrity OR integrity
   const acx_integrity = toStringSafe(
-    pick(body, ["acx_integrity", "integrity", "integrity_status", "integrityStatus"])
+    pick(body, ["acx_integrity", "integrity", "integrity_status"])
   );
 
-  const uptime = toStringSafe(pick(body, ["uptime", "uptime_pct", "uptimePct"]));
-  const response_ms = toStringSafe(
-    pick(body, ["response_ms", "responseMs", "response"])
-  );
-  const conversion = toStringSafe(pick(body, ["conversion", "conv", "Conv"]));
-  const quotes_recovered = toStringSafe(
-    pick(body, ["quotes_recovered", "quotesRecovered", "quotes", "QuotesRecovered"])
-  );
+  const uptime = toStringSafe(pick(body, ["uptime"]));
+  const response_ms = toStringSafe(pick(body, ["response_ms"]));
+  const conversion = toStringSafe(pick(body, ["conversion"]));
+  const quotes_recovered = toStringSafe(pick(body, ["quotes_recovered"]));
 
-  if (!account || !location) {
-    return json({ ok: false, error: "Missing required fields: account, location" }, 400);
+  if (!location) {
+    return json({ ok: false, error: "Missing required field: location" }, 400);
   }
 
   const secret =
@@ -108,16 +99,17 @@ export default async (req) => {
   const origin = new URL(req.url).origin;
   const forwardUrl = `${origin}/.netlify/functions/acx-matrix-webhook`;
 
+  // Redundant "source" in body so webhook sees ingest even if header is altered
   const payload = {
     account,
     location,
     run_id,
     acx_integrity,
-    integrity: acx_integrity, // both keys
     uptime,
     response_ms,
     conversion,
     quotes_recovered,
+    source: "ingest",
   };
 
   const r = await fetch(forwardUrl, {
@@ -125,29 +117,18 @@ export default async (req) => {
     headers: {
       "Content-Type": "application/json",
       "x-acx-secret": secret,
-
-      // must allow metric overwrite in webhook
-      "x-acx-source": "ingest",
+      "x-acx-source": "ingest", // ✅ THIS is the critical fix
     },
     body: JSON.stringify(payload),
   });
 
-  let upstreamText = "";
+  const text = await r.text();
   try {
-    upstreamText = await r.text();
+    return json({ ok: r.ok, forwarded: true, upstream: JSON.parse(text) }, r.status);
   } catch {
-    upstreamText = "";
-  }
-
-  // ✅ Return ECHO so we can prove what the browser actually sent
-  return json(
-    {
-      ok: r.ok,
+    return new Response(text, {
       status: r.status,
-      received_body: body,
-      forwarded_payload: payload,
-      upstream_raw: upstreamText,
-    },
-    r.status
-  );
+      headers: { "Content-Type": "text/plain", "Cache-Control": "no-store" },
+    });
+  }
 };
