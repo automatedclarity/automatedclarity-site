@@ -316,7 +316,7 @@ export default async (req) => {
       recent,
       locations,
       series,
-      meta: { store: storeName, index_count },
+      meta: { store: storeName, index_count, build: "summary_empire_nulls_v1" },
     });
   } catch (e) {
     return json(
