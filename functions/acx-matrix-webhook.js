@@ -197,6 +197,9 @@ export default async (req) => {
 
   // Metrics overwrite protection: allow ingest + ingest_form to write summary metrics
   const allowMetricWrite = source === "ingest" || source === "ingest_form";
+  
+  // EMPIRE LOCK: only Sentinel may write integrity
+const allowIntegrityWrite = source === "sentinel";
 
   // Parse metrics (do NOT default to 0; null means "missing")
   const uptimeIn = parseNumber(pick(body, ["uptime"]));
@@ -289,8 +292,12 @@ export default async (req) => {
     // Integrity preservation:
     // - only overwrite if incoming integrity is present (ok/degraded/critical)
     // - otherwise preserve prior
-    const prevIntegrity = normalizeIntegrity(prevSummary?.integrity) || "";
-    const finalIntegrity = integrityNorm || prevIntegrity || "";
+   const prevIntegrity = normalizeIntegrity(prevSummary?.integrity) || "";
+
+// EMPIRE LOCK: only Sentinel may overwrite integrity
+const finalIntegrity = allowIntegrityWrite
+  ? (integrityNorm || prevIntegrity || "")
+  : (prevIntegrity || "");
 
     // Metrics preservation + overwrite shield:
     // - only ingest / ingest_form can write metrics
