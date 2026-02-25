@@ -2,8 +2,7 @@
 // Browser-safe ingest relay (cookie session required)
 // - Forwards to acx-matrix-webhook server-side with x-acx-secret
 // - MUST send x-acx-source: ingest (so webhook can write summary metrics)
-// - Fix: metrics were arriving as empty strings / mismatched keys -> coerced to 0
-// - Fix: integrity normalization to ok|degraded|critical|unknown
+// - Empire: missing/blank/invalid metrics become null (NOT 0)
 // - Supports metrics top-level OR inside data:{...}
 
 import { requireSession } from "./_lib/session.js";
@@ -65,13 +64,19 @@ function normalizeIntegrity(raw) {
   return "unknown";
 }
 
-function toNumberOrZero(raw) {
-  // Accept numbers or numeric strings; treat "", null, undefined as 0
-  if (raw === undefined || raw === null) return 0;
+function toNumberOrNull(raw) {
+  // Empire: treat "", null, undefined, invalid as null (missing)
+  if (raw === undefined || raw === null) return null;
+
   const s = String(raw).trim();
-  if (!s) return 0;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : 0;
+  if (!s) return null;
+
+  // allow "99.9%" and "1,234"
+  const cleaned = s.replace(/%/g, "").replace(/,/g, "").trim();
+  if (!cleaned) return null;
+
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
 }
 
 function requireNonEmpty(name, value) {
@@ -112,20 +117,23 @@ export default async (req) => {
 
   // LOCK: ok|degraded|critical|unknown
   const acx_integrity = normalizeIntegrity(
-    getField(body, ["acx_integrity", "integrity", "integrity_status", "integrityStatus"])
+    getField(body, [
+      "acx_integrity",
+      "integrity",
+      "integrity_status",
+      "integrityStatus",
+    ])
   );
 
   // metrics — support multiple key aliases
-  const uptime = toNumberOrZero(
+  const uptime = toNumberOrNull(
     getField(body, ["uptime", "uptime_pct", "uptimePct"])
   );
-  const response_ms = toNumberOrZero(
+  const response_ms = toNumberOrNull(
     getField(body, ["response_ms", "responseMs", "response", "resp"])
   );
-  const conversion = toNumberOrZero(
-    getField(body, ["conversion", "conv"])
-  );
-  const quotes_recovered = toNumberOrZero(
+  const conversion = toNumberOrNull(getField(body, ["conversion", "conv"]));
+  const quotes_recovered = toNumberOrNull(
     getField(body, ["quotes_recovered", "quotesRecovered", "quotes"])
   );
 
@@ -138,16 +146,18 @@ export default async (req) => {
   const origin = new URL(req.url).origin;
   const forwardUrl = `${origin}/.netlify/functions/acx-matrix-webhook`;
 
+  // Build payload; omit null metrics entirely to avoid any downstream ambiguity
   const payload = {
     account,
     location,
     run_id,
     acx_integrity,
-    uptime,
-    response_ms,
-    conversion,
-    quotes_recovered,
   };
+
+  if (uptime !== null) payload.uptime = uptime;
+  if (response_ms !== null) payload.response_ms = response_ms;
+  if (conversion !== null) payload.conversion = conversion;
+  if (quotes_recovered !== null) payload.quotes_recovered = quotes_recovered;
 
   const r = await fetch(forwardUrl, {
     method: "POST",
