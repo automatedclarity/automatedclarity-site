@@ -249,10 +249,10 @@ const allowIntegrityWrite = source === "sentinel";
     account,
     location: location || "",
 
-    uptime: uptimeIn ?? 0,
-    conversion: conversionIn ?? 0,
-    response_ms: responseMsIn ?? 0,
-    quotes_recovered: quotesRecoveredIn ?? 0,
+    uptime: uptimeIn ?? null,
+conversion: conversionIn ?? null,
+response_ms: responseMsIn ?? null,
+quotes_recovered: quotesRecoveredIn ?? null,
 
     integrity: integrityNorm || "unknown",
     acx_integrity: integrityNorm || "unknown",
