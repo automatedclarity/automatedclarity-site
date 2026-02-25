@@ -1,4 +1,4 @@
-// netlify/functions/acx-matrix-webhook.js
+// functions/acx-matrix-webhook.js
 // ACX Matrix ingest endpoint (GHL + Sentinel + curl)
 //
 // LOCKED BEHAVIOR (no drift):
@@ -6,12 +6,17 @@
 //    - "optimal" is normalized to "ok"
 //    - blank/unknown is treated as "missing" (does not overwrite existing summary)
 // 2) Metrics overwrite protection:
-//    - Only requests with header: x-acx-source: ingest  (or ingest_form)
+//    - Only requests with header: x-acx-source: ingest (or ingest_form)
 //      are allowed to WRITE metrics into per-location summary
 //    - Non-ingest events still store event rows, but do NOT clobber summary metrics
-// 3) Key normalization:
+// 3) EMPIRE: Integrity overwrite protection:
+//    - ONLY x-acx-source: sentinel may overwrite per-location integrity
+// 4) EMPIRE: No silent zeros:
+//    - Missing/blank metrics are stored as null in event rows (not 0)
+//    - Summary metrics only change when a value is present (non-null)
+// 5) Key normalization:
 //    - Promotes GHL customData[foo] and body.customData.foo to top-level foo
-// 4) Location is keyed as `location` (matches your current summary/dashboard)
+// 6) Location is keyed as `location` (matches summary/dashboard)
 
 import { getStore } from "@netlify/blobs";
 
@@ -29,7 +34,7 @@ const methodNotAllowed = () =>
 const unauthorized = () => json(401, { ok: false, error: "Unauthorized" });
 
 const checkAuth = (req) => {
-  const expected = process.env.ACX_SECRET || "";
+  const expected = (process.env.ACX_SECRET || "").trim();
   if (!expected) return false;
 
   const got =
@@ -38,7 +43,7 @@ const checkAuth = (req) => {
     req.headers.get("X-Acx-Secret") ||
     "";
 
-  return !!got && got === expected;
+  return !!got && String(got).trim() === expected;
 };
 
 // ---------- helpers ----------
@@ -78,9 +83,9 @@ const normalizeIntegrity = (v) => {
   if (s === "ok") return "ok";
   if (s === "degraded") return "degraded";
   if (s === "critical") return "critical";
-  if (s === "optimal") return "ok"; // disallow optimal
-  if (s === "unknown") return ""; // treat unknown as missing
-  return ""; // treat everything else as missing
+  if (s === "optimal") return "ok";
+  if (s === "unknown") return "";
+  return "";
 };
 
 const pick = (obj, keys) => {
@@ -92,12 +97,10 @@ const pick = (obj, keys) => {
 };
 
 const extractLocation = (raw) => {
-  // If GHL sends location object, extract ID
   if (raw && typeof raw === "object") {
     return raw.id || raw.locationId || raw.location_id || raw._id || "";
   }
   const s = asString(raw).trim();
-  // If it is literally "[object Object]" return empty to avoid polluting summaries
   if (s === "[object Object]") return "";
   return s;
 };
@@ -174,21 +177,17 @@ export default async (req) => {
     body = {};
   }
 
-  // IMPORTANT: normalize GHL customData[foo] keys
   body = normalizeGhlCustomData(body);
 
   const ts = nowISO();
 
-  // ✅ FIX: use the same blob store selection logic as summary
   const store = getStore({
     name: process.env.ACX_BLOBS_STORE || "acx-matrix",
   });
 
-  // ---- parse incoming ----
   const account =
     asString(pick(body, ["account", "acct"]) || "ACX").trim() || "ACX";
 
-  // IMPORTANT: dashboard is keyed on `location` (keep this)
   const location = extractLocation(
     pick(body, ["location", "location_id", "locationId"])
   );
@@ -197,9 +196,9 @@ export default async (req) => {
 
   // Metrics overwrite protection: allow ingest + ingest_form to write summary metrics
   const allowMetricWrite = source === "ingest" || source === "ingest_form";
-  
-  // EMPIRE LOCK: only Sentinel may write integrity
-const allowIntegrityWrite = source === "sentinel";
+
+  // EMPIRE: only Sentinel may write integrity
+  const allowIntegrityWrite = source === "sentinel";
 
   // Parse metrics (do NOT default to 0; null means "missing")
   const uptimeIn = parseNumber(pick(body, ["uptime"]));
@@ -209,12 +208,9 @@ const allowIntegrityWrite = source === "sentinel";
     pick(body, ["quotes_recovered", "quotes", "quotes_recove"])
   );
 
-  // Integrity can come in multiple keys
-  // LOCK: only ok/degraded/critical; everything else = missing
   const integrityRaw = pick(body, ["acx_integrity", "integrity"]);
   const integrityNorm = normalizeIntegrity(integrityRaw); // "" means missing
 
-  // telemetry extras (optional)
   const run_id =
     asString(pick(body, ["run_id", "runId"]) || "").trim() || `run-${Date.now()}`;
 
@@ -241,26 +237,23 @@ const allowIntegrityWrite = source === "sentinel";
   // ---- store event row ----
   const eventKey = `event:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
 
-  // For event rows:
-  // - store metrics as numbers or 0 (so the event row is always numeric)
-  // - store integrity as "unknown" only for display when missing
+  // EMPIRE: store null for missing metrics (no fake zeros)
   const ev = {
     ts,
     account,
     location: location || "",
 
     uptime: uptimeIn ?? null,
-conversion: conversionIn ?? null,
-response_ms: responseMsIn ?? null,
-quotes_recovered: quotesRecoveredIn ?? null,
+    conversion: conversionIn ?? null,
+    response_ms: responseMsIn ?? null,
+    quotes_recovered: quotesRecoveredIn ?? null,
 
     integrity: integrityNorm || "unknown",
     acx_integrity: integrityNorm || "unknown",
 
     run_id,
-    source, // includes "ingest" / "ingest_form" when header is present
+    source,
 
-    // optional telemetry
     event_name,
     stage,
     priority,
@@ -278,45 +271,38 @@ quotes_recovered: quotesRecoveredIn ?? null,
   await setJson(store, globalIndexKey, nextGlobalIndex);
 
   // ---- update per-location index + summary ----
-  // If location is missing, still store the event but don’t update per-location summary
   if (location) {
     const locIndexKey = `index:loc:${account}:${location}`;
     const locIndex = await getJson(store, locIndexKey, []);
     const nextLocIndex = pushIndex(locIndex, eventKey, MAX_LOC_INDEX);
     await setJson(store, locIndexKey, nextLocIndex);
 
-    // Read previous summary
     const locSummaryKey = `loc:${account}:${location}`;
     const prevSummary = await getJson(store, locSummaryKey, {});
 
-    // Integrity preservation:
-    // - only overwrite if incoming integrity is present (ok/degraded/critical)
-    // - otherwise preserve prior
-   const prevIntegrity = normalizeIntegrity(prevSummary?.integrity) || "";
+    const prevIntegrity = normalizeIntegrity(prevSummary?.integrity) || "";
 
-// EMPIRE LOCK: only Sentinel may overwrite integrity
-const finalIntegrity = allowIntegrityWrite
-  ? (integrityNorm || prevIntegrity || "")
-  : (prevIntegrity || "");
+    // EMPIRE: only Sentinel may overwrite integrity
+    const finalIntegrity = allowIntegrityWrite
+      ? (integrityNorm || prevIntegrity || "")
+      : (prevIntegrity || "");
 
-    // Metrics preservation + overwrite shield:
-    // - only ingest / ingest_form can write metrics
-    // - even then only overwrites when value is present (non-null)
+    // Summary metrics: only overwrite when value is present (non-null)
     const finalUptime = allowMetricWrite
-      ? uptimeIn ?? prevSummary.uptime ?? 0
-      : prevSummary.uptime ?? 0;
+      ? (uptimeIn ?? prevSummary.uptime ?? 0)
+      : (prevSummary.uptime ?? 0);
 
     const finalConversion = allowMetricWrite
-      ? conversionIn ?? prevSummary.conversion ?? 0
-      : prevSummary.conversion ?? 0;
+      ? (conversionIn ?? prevSummary.conversion ?? 0)
+      : (prevSummary.conversion ?? 0);
 
     const finalResponseMs = allowMetricWrite
-      ? responseMsIn ?? prevSummary.response_ms ?? 0
-      : prevSummary.response_ms ?? 0;
+      ? (responseMsIn ?? prevSummary.response_ms ?? 0)
+      : (prevSummary.response_ms ?? 0);
 
     const finalQuotesRecovered = allowMetricWrite
-      ? quotesRecoveredIn ?? prevSummary.quotes_recovered ?? 0
-      : prevSummary.quotes_recovered ?? 0;
+      ? (quotesRecoveredIn ?? prevSummary.quotes_recovered ?? 0)
+      : (prevSummary.quotes_recovered ?? 0);
 
     const locSummary = {
       location,
@@ -328,14 +314,12 @@ const finalIntegrity = allowIntegrityWrite
       response_ms: finalResponseMs,
       quotes_recovered: finalQuotesRecovered,
 
-      // If still missing, represent as "unknown" for the dashboard,
-      // but we NEVER store "optimal"
       integrity: finalIntegrity || "unknown",
     };
 
     await setJson(store, locSummaryKey, locSummary);
 
-    // Maintain a simple locations list for the dashboard
+    // Maintain locations list for dashboard
     const locListKey = `locations:${account}`;
     const locList = await getJson(store, locListKey, []);
     const nextLocList = Array.isArray(locList) ? locList.filter(Boolean) : [];
@@ -351,7 +335,6 @@ const finalIntegrity = allowIntegrityWrite
       integrity: locSummary.integrity,
     };
 
-    // replace existing or add new
     let replaced = false;
     for (let i = 0; i < nextLocList.length; i++) {
       if (
@@ -364,7 +347,6 @@ const finalIntegrity = allowIntegrityWrite
     }
     if (!replaced) nextLocList.unshift(item);
 
-    // Deduplicate
     const seen = new Set();
     const deduped = [];
     for (const r of nextLocList) {
@@ -383,7 +365,6 @@ const finalIntegrity = allowIntegrityWrite
     stored: true,
     key: eventKey,
     store: process.env.ACX_BLOBS_STORE || "acx-matrix",
-    // debug flags (safe)
     allowMetricWrite,
     source,
   });
