@@ -8,10 +8,11 @@
     :root{
       --bg0:#000;
       --bg1:#020617;
+      --stroke:rgba(148,163,184,.22);
       --text:#f9fafb;
       --muted:#9ca3af;
-      --stroke:rgba(148,163,184,.22);
-      --stroke2:rgba(31,41,55,.88);
+      --chip:rgba(15,23,42,.85);
+      --accent:#3b82f6;
       --ok:#22c55e;
       --warn:#fbbf24;
       --crit:#fb7185;
@@ -27,10 +28,9 @@
       min-height:100vh;
     }
     .shell{max-width:1180px;margin:0 auto;padding:28px 16px 50px}
-
     header{
       display:flex;align-items:flex-start;justify-content:space-between;
-      gap:14px;margin-bottom:14px;
+      gap:14px;margin-bottom:16px;
     }
     .title h1{font-size:1.65rem;font-weight:800;letter-spacing:.2px}
     .title p{margin-top:4px;color:var(--muted);font-size:.92rem}
@@ -45,26 +45,23 @@
       cursor:pointer;
       transition:transform .05s ease, opacity .15s ease;
       user-select:none;
-      white-space:nowrap;
     }
     .btn:active{transform:translateY(1px)}
     .btn.primary{
       border:none;
       background:linear-gradient(135deg,#3b82f6,#a855f7);
       font-weight:800;
-      padding:10px 18px;
-      box-shadow: 0 14px 30px rgba(168,85,247,.18);
+      padding:10px 16px;
     }
     .btn.secondary{background:rgba(15,23,42,.55)}
     .btn:disabled{opacity:.6;cursor:not-allowed}
 
-    /* --- toolbar --- */
     .controls{
       display:grid;
-      grid-template-columns: 170px 170px 1fr 170px 240px auto;
+      grid-template-columns: 170px 170px 1fr 170px 220px 120px;
       gap:10px;
       align-items:center;
-      margin: 10px 0 12px;
+      margin: 10px 0 14px;
     }
     .control{
       background:rgba(15,23,42,.55);
@@ -72,7 +69,6 @@
       border-radius:999px;
       padding:8px 10px;
       display:flex;align-items:center;gap:8px;
-      min-width:0;
     }
     .control label{
       color:var(--muted);
@@ -86,7 +82,6 @@
       color:var(--text);
       width:100%;
       font-size:.86rem;
-      min-width:0;
     }
     .control input::placeholder{color:rgba(148,163,184,.65)}
     .control.compact{justify-content:space-between}
@@ -112,11 +107,9 @@
       border:1px solid rgba(148,163,184,.18);
       color:rgba(226,232,240,.95);
       font-size:.78rem;
-      white-space:nowrap;
     }
     .dot{width:7px;height:7px;border-radius:999px;background:var(--ok);box-shadow:0 0 12px rgba(34,197,94,.45)}
 
-    /* --- summary --- */
     .summary{
       display:grid;
       grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -131,73 +124,56 @@
       padding: 12px 14px;
     }
     .card .k{color:var(--muted);font-size:.76rem;margin-bottom:4px}
-    .card .v{font-size:1.35rem;font-weight:900}
+    .card .v{font-size:1.35rem;font-weight:800}
     .card .h{color:var(--muted);font-size:.72rem;margin-top:2px}
 
     .section-head{
-      display:flex;align-items:flex-end;justify-content:space-between;gap:10px;
+      display:flex;align-items:center;justify-content:space-between;gap:10px;
       margin: 14px 0 8px;
     }
-    .section-head h2{font-size:1.05rem;font-weight:900;color:rgba(226,232,240,.95)}
+    .section-head h2{font-size:1.05rem;font-weight:800;color:rgba(226,232,240,.95)}
     .section-head .tip{color:var(--muted);font-size:.78rem}
 
-    /* --- locations list (tight + inline telemetry) --- */
     .loc-list{display:flex;flex-direction:column;gap:10px}
-
     .loc{
       background: radial-gradient(circle at top left, #020617 0, #020617 70%);
       border-radius: var(--radius);
       border:1px solid rgba(31,41,55,.92);
       padding: 14px 16px;
-
       display:grid;
-      grid-template-columns:
-        minmax(240px, 1.5fr)
-        repeat(4, minmax(84px, .6fr))
-        minmax(300px, 1.2fr)
-        110px;
+      grid-template-columns: 260px 120px 120px 120px 92px 1fr 92px;
       gap:12px;
       align-items:center;
-
       box-shadow: 0 0 0 1px rgba(148,163,184,.06) inset;
-      overflow:hidden;
     }
-
-    .main{min-width:0;display:flex;flex-direction:column;gap:2px}
-    .acct{font-weight:900;letter-spacing:.2px}
-    .id{font-weight:800;font-size:.92rem;word-break:break-all;color:rgba(226,232,240,.94)}
-    .sub{color:var(--muted);font-size:.76rem}
+    .loc .main{display:flex;flex-direction:column;gap:2px}
+    .loc .acct{font-weight:900;letter-spacing:.2px}
+    .loc .id{color:rgba(226,232,240,.92);font-weight:700;font-size:.9rem;word-break:break-all}
+    .loc .sub{color:var(--muted);font-size:.76rem}
 
     .metric{display:flex;flex-direction:column;gap:2px}
     .metric .k{color:var(--muted);font-size:.72rem}
-    .metric .v{font-size:1.18rem;font-weight:900;letter-spacing:.2px}
+    .metric .v{font-size:1.22rem;font-weight:900;letter-spacing:.2px}
 
-    .telemetry{
-      display:flex;
-      align-items:center;
-      justify-content:flex-end;
-      gap:10px;
-      flex-wrap:nowrap;
-      min-width:0;
-    }
-    .spark{
-      width:92px;height:42px;
+    .charts{display:flex;gap:10px;justify-content:flex-end;flex-wrap:nowrap}
+    .mini{
+      width:96px;height:56px;
       border-radius:14px;
       border:1px solid rgba(148,163,184,.16);
-      background:rgba(15,23,42,.28);
-      padding:7px 8px 6px;
+      background:rgba(15,23,42,.35);
+      padding:8px 8px 6px;
       display:flex;flex-direction:column;gap:6px;
     }
-    .spark .k{font-size:.7rem;color:var(--muted);font-weight:800}
-    .spark svg{width:100%;height:100%}
+    .mini .k{font-size:.7rem;color:var(--muted);font-weight:700}
+    .mini svg{width:100%;height:100%}
 
     .badge{
       justify-self:end;
       display:inline-flex;align-items:center;justify-content:center;
       border-radius:999px;
-      padding:7px 12px;
+      padding:6px 12px;
       font-size:.78rem;
-      font-weight:900;
+      font-weight:800;
       border:1px solid transparent;
       text-transform:capitalize;
       white-space:nowrap;
@@ -205,10 +181,9 @@
     .b-ok{background:rgba(34,197,94,.14);color:var(--ok);border-color:rgba(34,197,94,.35)}
     .b-warn{background:rgba(251,191,36,.14);color:var(--warn);border-color:rgba(251,191,36,.35)}
     .b-crit{background:rgba(251,113,133,.14);color:var(--crit);border-color:rgba(251,113,133,.35)}
-    .b-stale{background:rgba(148,163,184,.10);color:rgba(226,232,240,.86);border-color:rgba(148,163,184,.20)}
     .b-unk{background:rgba(148,163,184,.14);color:rgba(226,232,240,.92);border-color:rgba(148,163,184,.28)}
+    .b-stale{background:rgba(148,163,184,.10);color:rgba(226,232,240,.86);border-color:rgba(148,163,184,.20)}
 
-    /* --- table --- */
     .table{
       margin-top:12px;
       border-radius: var(--radius);
@@ -251,23 +226,19 @@
     }
 
     @media (max-width: 1080px){
-      .controls{grid-template-columns: 1fr 1fr 1fr 1fr 1fr auto}
-      .loc{grid-template-columns: 1fr 1fr}
-      .telemetry{justify-content:flex-start;flex-wrap:wrap}
-      .badge{justify-self:start}
+      .controls{grid-template-columns: 1fr 1fr 1fr 1fr 1fr 120px}
+      .loc{grid-template-columns: 1.4fr .9fr .9fr .9fr .7fr 1fr .7fr}
     }
-    @media (max-width: 920px){
+    @media (max-width: 860px){
       .summary{grid-template-columns: repeat(2, minmax(0,1fr));}
       .controls{grid-template-columns: 1fr 1fr; }
+      .loc{grid-template-columns: 1fr 1fr; grid-auto-rows:auto; }
+      .charts{justify-content:flex-start}
+      .badge{justify-self:start}
       thead{display:none}
-      tbody tr{
-        display:grid;
-        grid-template-columns: 1fr 1fr;
-        gap:8px;
-        padding:10px 12px;
-        border-bottom:1px solid rgba(148,163,184,.10)
-      }
-      tbody td{border-bottom:none;padding:0;white-space:normal}
+      tbody td{white-space:normal}
+      tbody tr{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:10px 12px;border-bottom:1px solid rgba(148,163,184,.10)}
+      tbody td{border-bottom:none;padding:0}
     }
   </style>
 </head>
@@ -278,14 +249,16 @@
         <h1>ACX Matrix — Dashboard</h1>
         <p>Live integrity &amp; performance across locations</p>
       </div>
-      <button id="logoutBtn" class="btn secondary" type="button">Log out</button>
+      <div style="display:flex;gap:10px;align-items:center;">
+        <button id="logoutBtn" class="btn secondary" type="button">Log out</button>
+      </div>
     </header>
 
     <div class="controls">
       <div class="control">
         <label>Auto-refresh</label>
         <select id="refreshSel">
-          <option value="0">Off</option>
+          <option value="0" selected>Off</option>
           <option value="10">10s</option>
           <option value="30">30s</option>
           <option value="60">60s</option>
@@ -345,11 +318,27 @@
     </div>
 
     <div class="summary">
-      <div class="card"><div class="k">Locations</div><div class="v" id="sumLocations">0</div></div>
-      <div class="card"><div class="k">Critical</div><div class="v" id="sumCritical">0</div></div>
-      <div class="card"><div class="k">Degraded</div><div class="v" id="sumDegraded">0</div></div>
-      <div class="card"><div class="k">OK</div><div class="v" id="sumOk">0</div></div>
-      <div class="card"><div class="k">Stale</div><div class="v" id="sumStale">0</div><div class="h" id="sumStaleHelp">—</div></div>
+      <div class="card">
+        <div class="k">Locations</div>
+        <div class="v" id="sumLocations">0</div>
+      </div>
+      <div class="card">
+        <div class="k">Critical</div>
+        <div class="v" id="sumCritical">0</div>
+      </div>
+      <div class="card">
+        <div class="k">Degraded</div>
+        <div class="v" id="sumDegraded">0</div>
+      </div>
+      <div class="card">
+        <div class="k">OK</div>
+        <div class="v" id="sumOk">0</div>
+      </div>
+      <div class="card">
+        <div class="k">Stale</div>
+        <div class="v" id="sumStale">0</div>
+        <div class="h" id="sumStaleHelp">—</div>
+      </div>
     </div>
 
     <div class="section-head">
@@ -369,7 +358,16 @@
       <table>
         <thead>
           <tr>
-            <th>Timestamp</th><th>Account</th><th>Location</th><th>Uptime</th><th>Conv</th><th>Resp</th><th>Quotes</th><th>Integrity</th><th>Run ID</th><th>Source</th>
+            <th>Timestamp</th>
+            <th>Account</th>
+            <th>Location</th>
+            <th>Uptime</th>
+            <th>Conv</th>
+            <th>Resp</th>
+            <th>Quotes</th>
+            <th>Integrity</th>
+            <th>Run ID</th>
+            <th>Source</th>
           </tr>
         </thead>
         <tbody id="recentBody"></tbody>
@@ -412,6 +410,10 @@
     let refreshTimer = null;
     let lastData = null;
 
+    // HARD LOCK: never spam fetch — one request at a time, abort previous.
+    let inFlight = false;
+    let aborter = null;
+
     function normIntegrity(v){
       const s = String(v || "unknown").toLowerCase().trim();
       if (s === "ok") return "ok";
@@ -424,7 +426,7 @@
       if (s === "critical") return 3;
       if (s === "degraded") return 2;
       if (s === "unknown") return 1;
-      return 0;
+      return 0; // ok
     }
     function badgeClass(integrity, isStale){
       if (isStale) return "badge b-stale";
@@ -449,6 +451,7 @@
       if (!Number.isFinite(t)) return Infinity;
       return (nowMs - t) / 60000;
     }
+
     function fmtAgo(mins){
       if (!Number.isFinite(mins)) return "—";
       if (mins < 1) return "just now";
@@ -457,20 +460,21 @@
       const m = Math.floor(mins % 60);
       return m ? `${h}h ${m}m ago` : `${h}h ago`;
     }
+
     function safeNum(v){
       const n = Number(v);
       return Number.isFinite(n) ? n : 0;
     }
 
     function sparkSVG(values, stroke){
-      const W = 80, H = 26;
+      const W = 80;
+      const H = 34;
       const vals = (Array.isArray(values) ? values : []).map(Number).filter((n) => Number.isFinite(n));
       if (vals.length < 2){
-        return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-          <polyline fill="none" stroke="${stroke}" stroke-width="2" opacity="0.55" points="0,${H/2} ${W},${H/2}" />
-        </svg>`;
+        return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><polyline fill="none" stroke="${stroke}" stroke-width="2" opacity="0.55" points="0,${H/2} ${W},${H/2}" /></svg>`;
       }
-      let min = Math.min(...vals), max = Math.max(...vals);
+      let min = Math.min(...vals);
+      let max = Math.max(...vals);
       if (min === max){ min -= 1; max += 1; }
       const step = W / (vals.length - 1);
       const pts = vals.map((v, i) => {
@@ -478,9 +482,7 @@
         const y = (H - ((v - min) / (max - min)) * H);
         return `${x.toFixed(2)},${y.toFixed(2)}`;
       }).join(" ");
-      return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-        <polyline fill="none" stroke="${stroke}" stroke-width="2" points="${pts}" />
-      </svg>`;
+      return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><polyline fill="none" stroke="${stroke}" stroke-width="2" points="${pts}" /></svg>`;
     }
 
     function deriveSeriesFor(loc, seriesObj){
@@ -550,7 +552,7 @@
       const staleMins = Number(staleSel.value || 10);
 
       const tiles = Array.isArray(locations) ? locations.filter(x => x && x.location) : [];
-      let cCrit=0,cDeg=0,cOk=0,cStale=0;
+      let cCrit=0,cDeg=0,cOk=0,cUnk=0,cStale=0;
 
       for (const t of tiles){
         const mins = minutesBetween(now, t.last_seen);
@@ -560,6 +562,7 @@
         if (s === "critical") cCrit++;
         else if (s === "degraded") cDeg++;
         else if (s === "ok") cOk++;
+        else cUnk++;
       }
 
       sumLocations.textContent = String(tiles.length);
@@ -570,7 +573,6 @@
       sumStaleHelp.textContent = `${staleMins}m stale threshold`;
 
       const filtered = applyFilters(tiles);
-
       locList.innerHTML = "";
       locEmpty.style.display = filtered.length ? "none" : "block";
 
@@ -602,10 +604,10 @@
           <div class="metric"><div class="k">Resp</div><div class="v">${resp}</div></div>
           <div class="metric"><div class="k">Quotes</div><div class="v">${quotes}</div></div>
 
-          <div class="telemetry">
-            <div class="spark"><div class="k">Upt</div>${sparkSVG(s.uptime, "rgba(34,197,94,.9)")}</div>
-            <div class="spark"><div class="k">Conv</div>${sparkSVG(s.conv, "rgba(59,130,246,.9)")}</div>
-            <div class="spark"><div class="k">Resp</div>${sparkSVG(s.resp, "rgba(251,191,36,.9)")}</div>
+          <div class="charts">
+            <div class="mini"><div class="k">Upt</div>${sparkSVG(s.uptime, "rgba(34,197,94,.9)")}</div>
+            <div class="mini"><div class="k">Conv</div>${sparkSVG(s.conv, "rgba(59,130,246,.9)")}</div>
+            <div class="mini"><div class="k">Resp</div>${sparkSVG(s.resp, "rgba(251,191,36,.9)")}</div>
           </div>
 
           <div class="${badgeClass(t.integrity, isStale)}">${labelFor(t.integrity, isStale)}</div>
@@ -657,21 +659,29 @@
 
       const nowStr = new Date().toLocaleTimeString();
       lastRefreshPill.style.display = "inline-flex";
+      lastRefreshPill.className = "pill";
       lastRefreshPill.textContent = `Last refresh: ${nowStr}`;
 
       lastData = { locations: tiles, recent: rows, series: series || {}, meta: meta || {} };
     }
 
     async function loadData(){
+      if (inFlight) return; // lock: never overlap
+      inFlight = true;
+
+      // abort previous (safety)
+      try { if (aborter) aborter.abort(); } catch {}
+      aborter = new AbortController();
+
       const limit = Math.max(1, Math.min(500, Number(limitSel.value || 100)));
       loadBtn.disabled = true;
       loadBtn.textContent = "Loading…";
 
       try{
-        const res = await fetch(`${API_BASE}/acx-matrix-summary?limit=${encodeURIComponent(limit)}`, {
-          method: "GET",
-          credentials: "same-origin"
-        });
+        const res = await fetch(
+          `${API_BASE}/acx-matrix-summary?limit=${encodeURIComponent(limit)}`,
+          { method: "GET", signal: aborter.signal, cache: "no-store" }
+        );
         if (!res.ok) throw new Error("Failed to load summary");
         const data = await res.json();
 
@@ -682,11 +692,16 @@
 
         render(locations, recent, series, meta);
       } catch(e){
-        console.error(e);
-        metaText.textContent = "Error loading Matrix data";
+        if (e && e.name === "AbortError") {
+          // ignore
+        } else {
+          console.error(e);
+          metaText.textContent = "Error loading Matrix data";
+        }
       } finally{
         loadBtn.disabled = false;
         loadBtn.textContent = "Load";
+        inFlight = false;
       }
     }
 
@@ -697,13 +712,15 @@
       refreshTimer = setInterval(loadData, secs * 1000);
     }
 
-    loadBtn.addEventListener("click", loadData);
-    refreshSel.addEventListener("change", setupAutoRefresh);
-
+    // live filter rerender without refetch
     const rerender = () => {
       if (!lastData) return;
       render(lastData.locations, lastData.recent, lastData.series, lastData.meta);
     };
+
+    loadBtn.addEventListener("click", loadData);
+    refreshSel.addEventListener("change", setupAutoRefresh);
+
     searchInp.addEventListener("input", rerender);
     integritySel.addEventListener("change", rerender);
     staleSel.addEventListener("change", rerender);
@@ -711,7 +728,9 @@
 
     csvBtn.addEventListener("click", () => {
       if (!lastData) return;
-      const rows = [["timestamp","account","location","uptime","conversion","response_ms","quotes_recovered","integrity","run_id","source"]];
+      const rows = [
+        ["timestamp","account","location","uptime","conversion","response_ms","quotes_recovered","integrity","run_id","source"]
+      ];
       for (const r of (lastData.recent || [])){
         rows.push([
           r.ts || "",
@@ -729,8 +748,11 @@
       downloadCSV(`acx-matrix-recent-${new Date().toISOString().slice(0,10)}.csv`, rows);
     });
 
-    logoutBtn.addEventListener("click", () => { window.location.href = "/matrix-logout"; });
+    logoutBtn.addEventListener("click", () => {
+      window.location.href = "/matrix-logout";
+    });
 
+    // initial
     setupAutoRefresh();
     loadData();
   </script>
