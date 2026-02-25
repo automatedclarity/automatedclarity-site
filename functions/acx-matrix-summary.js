@@ -89,6 +89,10 @@ function normalizeIndex(raw) {
 }
 
 function toNum(x, fallback = null) {
+  // EMPIRE: preserve null/undefined/blank as "missing" (do NOT coerce to 0)
+  if (x === null || x === undefined) return fallback;
+  if (typeof x === "string" && x.trim() === "") return fallback;
+
   const n = Number(x);
   return Number.isFinite(n) ? n : fallback;
 }
