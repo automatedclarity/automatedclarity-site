@@ -10,9 +10,12 @@
 // - Location normalized so you never get "[object Object]"
 // - Supports metrics in top-level OR inside data:{...}
 //
-// ✅ NO SDK DEPENDENCY:
-// - Removes @netlify/blobs import entirely to avoid bundling/runtime module resolution drift
-// - Reads blobs via Netlify Blobs HTTP endpoint using env tokens
+// ✅ EMPIRE PATCH (2026-02-25):
+// - NO silent default-to-zero in recent/series: missing metrics remain null
+// - Any present metric counts as a metrics row (including 0)
+//
+// Note: This file still uses @netlify/blobs via getStore; it also includes an HTTP fallback.
+// We are not redesigning that here.
 
 import { requireSession } from "./_lib/session.js";
 import { getStore } from "@netlify/blobs";
@@ -23,10 +26,8 @@ const json = (obj, status = 200) =>
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
 
-// --------------- Blobs HTTP (no @netlify/blobs dependency) ---------------
+// --------------- Blobs HTTP fallback ---------------
 function getBlobsBase(storeName) {
-  // Netlify Blobs HTTP endpoint on same site:
-  // /.netlify/blobs/<store>/<key>
   return `https://console.automatedclarity.com/.netlify/blobs/${encodeURIComponent(
     storeName
   )}/`;
@@ -35,7 +36,8 @@ function getBlobsBase(storeName) {
 function blobsHeaders() {
   const h = {};
   if (process.env.NETLIFY_SITE_ID) h["x-nf-site-id"] = process.env.NETLIFY_SITE_ID;
-  if (process.env.NETLIFY_BLOBS_TOKEN) h["x-nf-blobs-token"] = process.env.NETLIFY_BLOBS_TOKEN;
+  if (process.env.NETLIFY_BLOBS_TOKEN)
+    h["x-nf-blobs-token"] = process.env.NETLIFY_BLOBS_TOKEN;
 
   const bearer =
     process.env.NETLIFY_API_TOKEN ||
@@ -48,7 +50,7 @@ function blobsHeaders() {
 }
 
 async function storeGetJSON(base, key, store) {
-  // Prefer SDK (same as acx-matrix-recent) so summary reads the same store/index reliably
+  // Prefer SDK first
   try {
     if (store) {
       const v = await store.get(key, { type: "json" });
@@ -58,20 +60,18 @@ async function storeGetJSON(base, key, store) {
     // fall through to HTTP
   }
 
+  // HTTP fallback
   try {
     const url = base + encodeURIComponent(key);
-    const r = await fetch(url, {
-      method: "GET",
-      headers: blobsHeaders(),
-    });
+    const r = await fetch(url, { method: "GET", headers: blobsHeaders() });
     if (!r.ok) return null;
 
     const text = await r.text();
     if (!text) return null;
+
     try {
       return JSON.parse(text);
     } catch {
-      // If it isn't JSON, treat as null (this function expects JSON)
       return null;
     }
   } catch {
@@ -140,17 +140,19 @@ function getIntegrity(ev) {
   );
 }
 
+// EMPIRE: preserve missing metrics as null (no fabricated zeros)
 function getMetric(ev, key) {
   const v = getField(ev, key);
-  return toNum(v, 0);
+  return toNum(v, null);
 }
 
+// EMPIRE: any present metric counts (including 0); missing is null
 function hasMetrics(ev) {
   const u = getMetric(ev, "uptime");
   const c = getMetric(ev, "conversion");
   const r = getMetric(ev, "response_ms");
   const q = getMetric(ev, "quotes_recovered");
-  return [u, c, r, q].some((n) => Number.isFinite(n) && n !== 0);
+  return [u, c, r, q].some((n) => n !== null && Number.isFinite(n));
 }
 
 function isWorkflowEvent(ev) {
@@ -210,8 +212,8 @@ function secretAllowed(req) {
 async function enforceAuth(req) {
   try {
     const maybe = await requireSession(req);
-    if (maybe instanceof Response) return maybe; // redirect/deny when not authed
-    return null; // authed
+    if (maybe instanceof Response) return maybe;
+    return null;
   } catch {
     // fall through
   }
@@ -269,7 +271,6 @@ export default async (req) => {
     keys = sortEventKeysAscending(keys);
 
     const index_count = keys.length;
-
     const tailKeys = keys.slice(Math.max(0, keys.length - limit)).reverse();
 
     const allEvents = [];
@@ -289,10 +290,12 @@ export default async (req) => {
       quotes_recovered: getMetric(e, "quotes_recovered"),
     }));
 
+    // Recent is metrics-only and excludes workflow telemetry rows
     const recent = normalizedAll.filter(
       (e) => hasMetrics(e) && !isWorkflowEvent(e)
     );
 
+    // Series for charts (preserve nulls so UI can decide how to render)
     const series = {};
     for (const ev of recent.slice().reverse()) {
       const loc = getLocationValue(ev);
@@ -300,10 +303,10 @@ export default async (req) => {
       if (!series[loc]) series[loc] = [];
       series[loc].push({
         ts: ev.ts,
-        uptime: Number(ev.uptime || 0),
-        conv: Number(ev.conversion || 0),
-        resp: Number(ev.response_ms || 0),
-        quotes: Number(ev.quotes_recovered || 0),
+        uptime: ev.uptime ?? null,
+        conv: ev.conversion ?? null,
+        resp: ev.response_ms ?? null,
+        quotes: ev.quotes_recovered ?? null,
         integrity: getIntegrity(ev),
       });
     }
