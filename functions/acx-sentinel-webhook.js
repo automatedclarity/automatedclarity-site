@@ -109,7 +109,7 @@ function isFailureEvent(payload, failStreak) {
 // 🔥 NEW — authoritative Matrix ingest
 async function postMatrixIntegrity({ account, location, integrity, run_id }) {
   try {
-    const secret = (process.env.ACX_WEBHOOK_SECRET || "").trim();
+    const secret = (process.env.ACX_SECRET || "").trim();
     if (!secret) return;
 
     const url = "https://console.automatedclarity.com/.netlify/functions/acx-matrix-ingest-integrity";
