@@ -1,7 +1,7 @@
 // netlify/functions/acx-sentinel-webhook.js
 // ACX Sentinel — Contact Writeback (Production Safe)
 // + Matrix Integrity POST
-// + Blobs logging (non-blocking)
+// + manual Blobs config
 
 let getStore = null;
 try {
@@ -9,8 +9,6 @@ try {
 } catch (_) {
   getStore = null;
 }
-
-const DEFAULT_API_VERSION = "2021-07-28";
 
 function normalizeKey(s) {
   return String(s || "")
@@ -87,7 +85,12 @@ async function appendSentinelEvent(event) {
   if (!getStore) return false;
 
   try {
-    const store = getStore("acx-sentinel");
+    const store = getStore({
+      name: "acx-sentinel",
+      siteID: process.env.NETLIFY_SITE_ID,
+      token: process.env.NETLIFY_BLOBS_TOKEN,
+    });
+
     const now = new Date();
     const yyyy = now.getUTCFullYear();
     const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
