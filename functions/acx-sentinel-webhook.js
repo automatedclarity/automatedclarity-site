@@ -1,7 +1,8 @@
 // netlify/functions/acx-sentinel-webhook.js
 // ACX Sentinel — Contact Writeback (Production Safe)
 // + Matrix Integrity POST
-// + Blob event logging (optional / non-blocking)
+// + manual Netlify Blobs config
+// + non-blocking Blob logging
 
 let getStore = null;
 try {
@@ -88,7 +89,10 @@ async function appendSentinelEvent(event) {
   if (!getStore) return false;
 
   try {
-    const store = getStore("acx-sentinel");
+    const siteID = getEnv("NETLIFY_SITE_ID", true);
+    const token = getEnv("NETLIFY_BLOBS_TOKEN", true);
+
+    const store = getStore("acx-sentinel", { siteID, token });
     const now = new Date();
     const yyyy = now.getUTCFullYear();
     const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
@@ -178,7 +182,7 @@ exports.handler = async (event) => {
       pickFirst(payload, ["run_id"]) ||
       `sentinel-${Date.now()}-${contactId}`;
 
-    // Blob logging is optional — never fail the webhook for it
+    // Blob logging is optional — never fail webhook for it
     await appendSentinelEvent({
       ts: new Date().toISOString(),
       run_id: runId,
