@@ -1,6 +1,6 @@
 // netlify/functions/acx-sentinel-watchdog.js
 // ACX Sentinel — Signal Watchdog (5-min loop)
-// + Blobs logging (non-blocking)
+// + manual Blobs config
 // + dedicated Sentinel token
 // + correct GHL contacts request shape
 
@@ -163,7 +163,12 @@ async function appendSentinelEvent(event) {
   if (!getStore) return false;
 
   try {
-    const store = getStore("acx-sentinel");
+    const store = getStore({
+      name: "acx-sentinel",
+      siteID: process.env.NETLIFY_SITE_ID,
+      token: process.env.NETLIFY_BLOBS_TOKEN,
+    });
+
     const now = new Date();
     const yyyy = now.getUTCFullYear();
     const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
