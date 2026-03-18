@@ -1,8 +1,7 @@
 // netlify/functions/acx-sentinel-watchdog.js
 // ACX Sentinel — Signal Watchdog (5-min loop)
 // + Blob event logging
-// + Safer GHL custom field handling
-// + Sentinel payload enrichment
+// + PIT-safe GHL contacts request
 
 const { getStore } = require("@netlify/blobs");
 
@@ -60,7 +59,6 @@ function buildHeaders(token) {
 function getFieldValue(contact, key) {
   const normalizedTarget = normalizeKey(key);
 
-  // 1) direct object lookup
   if (
     contact &&
     contact.customFields &&
@@ -76,7 +74,6 @@ function getFieldValue(contact, key) {
     }
   }
 
-  // 2) array-style custom fields
   if (Array.isArray(contact?.customFields)) {
     for (const field of contact.customFields) {
       const candidates = [
@@ -101,7 +98,6 @@ function getFieldValue(contact, key) {
     }
   }
 
-  // 3) flat contact fallback
   if (contact && contact[key] !== undefined && contact[key] !== null) {
     return contact[key];
   }
@@ -181,10 +177,9 @@ exports.handler = async () => {
   try {
     const locationId = getEnv("GHL_LOCATION_ID", true);
 
-    // Keep current approach simple; pagination can be added later if needed.
-    const data = await ghlRequest(
-      `/contacts/?locationId=${encodeURIComponent(locationId)}&limit=100`
-    );
+    // PIT token is already location-scoped.
+    // Do NOT pass locationId in the query string here.
+    const data = await ghlRequest(`/contacts/?limit=100`);
 
     const contacts = Array.isArray(data?.contacts) ? data.contacts : [];
     const nowMs = Date.now();
