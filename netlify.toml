@@ -1,5 +1,3 @@
-# netlify.toml — ACX Console
-
 [build]
   command = "npm install"
   publish = "public"
@@ -32,3 +30,6 @@
   to   = "/matrix-login"
   status = 301
   force = true
+
+[functions."acx-sentinel-watchdog"]
+  schedule = "0 * * * *"
