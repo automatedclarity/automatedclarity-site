@@ -1,8 +1,7 @@
 // netlify/functions/acx-sentinel-watchdog.js
 // ACX Sentinel — Signal Watchdog (5-min loop)
-// + manual Netlify Blobs config
-// + non-blocking Blob logging
-// + dedicated Sentinel token only
+// + Blobs logging (non-blocking)
+// + dedicated Sentinel token
 // + correct GHL contacts request shape
 
 let getStore = null;
@@ -17,7 +16,6 @@ const DEFAULT_API_VERSION = "2021-07-28";
 const DEFAULT_SENTINEL_URL =
   "https://console.automatedclarity.com/.netlify/functions/acx-sentinel-webhook";
 
-// -------------------- ENV --------------------
 function getEnv(name, required = false) {
   const v = process.env[name];
   if (required && (!v || !String(v).trim())) {
@@ -26,7 +24,6 @@ function getEnv(name, required = false) {
   return v;
 }
 
-// -------------------- HELPERS --------------------
 function safeJsonParse(raw) {
   try {
     return { ok: true, value: JSON.parse(raw) };
@@ -166,10 +163,7 @@ async function appendSentinelEvent(event) {
   if (!getStore) return false;
 
   try {
-    const siteID = getEnv("NETLIFY_SITE_ID", true);
-    const token = getEnv("NETLIFY_BLOBS_TOKEN", true);
-
-    const store = getStore("acx-sentinel", { siteID, token });
+    const store = getStore("acx-sentinel");
     const now = new Date();
     const yyyy = now.getUTCFullYear();
     const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
@@ -192,7 +186,6 @@ function buildRunId(contactId) {
   return `watchdog-${Date.now()}-${contactId}`;
 }
 
-// -------------------- MAIN --------------------
 exports.handler = async () => {
   try {
     const locationId = getEnv("GHL_LOCATION_ID", true);
