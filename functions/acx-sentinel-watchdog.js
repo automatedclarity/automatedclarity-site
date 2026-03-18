@@ -1,5 +1,5 @@
 // netlify/functions/acx-sentinel-watchdog.js
-// TEMP DIAGNOSTIC — proves which token env var is being used
+// TEMP DIAGNOSTIC — proves GHL_SENTINEL_TOKEN + locationId request together
 
 const DEFAULT_API_BASE = "https://services.leadconnectorhq.com";
 const DEFAULT_API_VERSION = "2021-07-28";
@@ -55,7 +55,10 @@ exports.handler = async () => {
       token_preview: maskToken(sentinelToken),
     });
 
-    const result = await testRequest(`/contacts/?limit=1`, sentinelToken);
+    const result = await testRequest(
+      `/contacts/?locationId=${encodeURIComponent(locationId)}&limit=1`,
+      sentinelToken
+    );
 
     console.log("WATCHDOG_DIAG_RESULT", result);
 
