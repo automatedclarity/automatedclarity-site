@@ -32,4 +32,4 @@
   force = true
 
 [functions."acx-sentinel-watchdog"]
-  schedule = "0 * * * *"
+  schedule = "*/5 * * * *"
