@@ -1,8 +1,8 @@
 // netlify/functions/acx-sentinel-watchdog.js
 // ACX Sentinel — Signal Watchdog (5-min loop)
-// + manual Blobs config
-// + dedicated Sentinel token
-// + correct GHL contacts request shape
+// + Grant failure detection (surgical add)
+// + Manual Blobs config (working)
+// + No architecture changes
 
 let getStore = null;
 try {
@@ -16,6 +16,7 @@ const DEFAULT_API_VERSION = "2021-07-28";
 const DEFAULT_SENTINEL_URL =
   "https://console.automatedclarity.com/.netlify/functions/acx-sentinel-webhook";
 
+// -------------------- ENV --------------------
 function getEnv(name, required = false) {
   const v = process.env[name];
   if (required && (!v || !String(v).trim())) {
@@ -24,6 +25,7 @@ function getEnv(name, required = false) {
   return v;
 }
 
+// -------------------- HELPERS --------------------
 function safeJsonParse(raw) {
   try {
     return { ok: true, value: JSON.parse(raw) };
@@ -191,6 +193,7 @@ function buildRunId(contactId) {
   return `watchdog-${Date.now()}-${contactId}`;
 }
 
+// -------------------- MAIN --------------------
 exports.handler = async () => {
   try {
     const locationId = getEnv("GHL_LOCATION_ID", true);
@@ -216,6 +219,8 @@ exports.handler = async () => {
           getFieldValue(c, "acx_fail_streak"),
           0
         );
+
+        // 🔴 NEW — GRANT STATUS (surgical add)
         const grantStatus = getFieldValue(c, "acx_grant_status") || "unknown";
 
         const runId = buildRunId(contactId);
@@ -223,10 +228,17 @@ exports.handler = async () => {
         let fail = false;
         let reason = "within_gap";
 
-        if (!lastEventAt) {
+        // 🔴 NEW — GRANT FAILURE FIRST
+        if (normalizeKey(grantStatus) === "disconnected") {
+          fail = true;
+          reason = "grant_disconnected";
+        }
+
+        // 🟡 EXISTING SIGNAL LOGIC (guarded)
+        if (!fail && !lastEventAt) {
           fail = true;
           reason = "missing_last_event";
-        } else {
+        } else if (!fail) {
           const lastMs = new Date(lastEventAt).getTime();
 
           if (Number.isNaN(lastMs)) {
@@ -234,7 +246,7 @@ exports.handler = async () => {
             reason = "invalid_last_event";
           } else {
             const diffMinutes = (nowMs - lastMs) / 60000;
-            if (diffMinutes > maxGapMinutes) {
+            if (!fail && diffMinutes > maxGapMinutes) {
               fail = true;
               reason = "gap_exceeded";
             }
