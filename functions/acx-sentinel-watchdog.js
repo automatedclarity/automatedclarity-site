@@ -1,10 +1,15 @@
 // netlify/functions/acx-sentinel-watchdog.js
 // ACX Sentinel — Signal Watchdog (5-min loop)
-// + Blob event logging
+// + Blob event logging (optional / non-blocking)
 // + dedicated Sentinel token only
 // + correct GHL contacts request shape
 
-const { getStore } = require("@netlify/blobs");
+let getStore = null;
+try {
+  ({ getStore } = require("@netlify/blobs"));
+} catch (_) {
+  getStore = null;
+}
 
 const DEFAULT_API_BASE = "https://services.leadconnectorhq.com";
 const DEFAULT_API_VERSION = "2021-07-28";
@@ -155,16 +160,26 @@ async function postSentinel(payload) {
 }
 
 async function appendSentinelEvent(event) {
-  const store = getStore("acx-sentinel");
-  const now = new Date();
-  const yyyy = now.getUTCFullYear();
-  const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(now.getUTCDate()).padStart(2, "0");
-  const key = `sentinel/${yyyy}-${mm}-${dd}/events.ndjson`;
+  if (!getStore) return false;
 
-  const line = JSON.stringify(event) + "\n";
-  const existing = (await store.get(key, { type: "text" })) || "";
-  await store.set(key, existing + line);
+  try {
+    const store = getStore("acx-sentinel");
+    const now = new Date();
+    const yyyy = now.getUTCFullYear();
+    const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(now.getUTCDate()).padStart(2, "0");
+    const key = `sentinel/${yyyy}-${mm}-${dd}/events.ndjson`;
+
+    const line = JSON.stringify(event) + "\n";
+    const existing = (await store.get(key, { type: "text" })) || "";
+    await store.set(key, existing + line);
+    return true;
+  } catch (err) {
+    console.error("WATCHDOG_BLOBS_DISABLED_OR_FAILED", {
+      error: err?.message || String(err),
+    });
+    return false;
+  }
 }
 
 function buildRunId(contactId) {
@@ -222,59 +237,32 @@ exports.handler = async () => {
           }
         }
 
-        if (fail) {
-          const nextFailStreak = currentFailStreak + 1;
+        const eventRecord = {
+          ts: isoNow(),
+          run_id: runId,
+          contact_id: contactId,
+          location_id: locationId,
+          event_type: fail ? "signal_stale" : "signal_ok",
+          status: fail ? "critical" : "optimal",
+          reason,
+          fail_streak: fail ? currentFailStreak + 1 : 0,
+          grant_status: grantStatus,
+          last_event_at: lastEventAt || null,
+          max_gap_minutes: maxGapMinutes,
+        };
 
-          await appendSentinelEvent({
-            ts: isoNow(),
-            run_id: runId,
-            contact_id: contactId,
-            location_id: locationId,
-            event_type: "signal_stale",
-            status: "critical",
-            reason,
-            fail_streak: nextFailStreak,
-            grant_status: grantStatus,
-            last_event_at: lastEventAt || null,
-            max_gap_minutes: maxGapMinutes,
-          });
+        await appendSentinelEvent(eventRecord);
 
-          await postSentinel({
-            contact_id: contactId,
-            location_id: locationId,
-            run_id: runId,
-            status: "critical",
-            fail_streak: nextFailStreak,
-            grant_status: grantStatus,
-            last_event_at: lastEventAt || null,
-            reason,
-          });
-        } else {
-          await appendSentinelEvent({
-            ts: isoNow(),
-            run_id: runId,
-            contact_id: contactId,
-            location_id: locationId,
-            event_type: "signal_ok",
-            status: "optimal",
-            reason,
-            fail_streak: 0,
-            grant_status: grantStatus,
-            last_event_at: lastEventAt || null,
-            max_gap_minutes: maxGapMinutes,
-          });
-
-          await postSentinel({
-            contact_id: contactId,
-            location_id: locationId,
-            run_id: runId,
-            status: "optimal",
-            fail_streak: 0,
-            grant_status: grantStatus,
-            last_event_at: lastEventAt || null,
-            reason,
-          });
-        }
+        await postSentinel({
+          contact_id: contactId,
+          location_id: locationId,
+          run_id: runId,
+          status: fail ? "critical" : "optimal",
+          fail_streak: fail ? currentFailStreak + 1 : 0,
+          grant_status: grantStatus,
+          last_event_at: lastEventAt || null,
+          reason,
+        });
       } catch (innerErr) {
         console.error("WATCHDOG_CONTACT_ERROR", {
           error: innerErr?.message || String(innerErr),
