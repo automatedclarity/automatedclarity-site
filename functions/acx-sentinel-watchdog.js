@@ -1,14 +1,8 @@
 // netlify/functions/acx-sentinel-watchdog.js
-// ACX Sentinel — Signal Watchdog (5-min loop)
-// + Blob event logging
-// + dedicated Sentinel token only
-
-const { getStore } = require("@netlify/blobs");
+// TEMP DIAGNOSTIC — proves which token env var is being used
 
 const DEFAULT_API_BASE = "https://services.leadconnectorhq.com";
 const DEFAULT_API_VERSION = "2021-07-28";
-const DEFAULT_SENTINEL_URL =
-  "https://console.automatedclarity.com/.netlify/functions/acx-sentinel-webhook";
 
 function getEnv(name, required = false) {
   const v = process.env[name];
@@ -18,280 +12,67 @@ function getEnv(name, required = false) {
   return v;
 }
 
-function safeJsonParse(raw) {
-  try {
-    return { ok: true, value: JSON.parse(raw) };
-  } catch (e) {
-    return { ok: false, error: e };
-  }
+function maskToken(token) {
+  const s = String(token || "");
+  if (s.length <= 12) return s;
+  return `${s.slice(0, 8)}...${s.slice(-6)}`;
 }
 
-function normalizeKey(s) {
-  return String(s || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "_")
-    .replace(/[^a-z0-9_]/g, "_")
-    .replace(/_+/g, "_")
-    .replace(/^_+|_+$/g, "");
-}
-
-function coerceNumber(val, fallback = 0) {
-  const n = Number(val);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function isoNow() {
-  return new Date().toISOString();
-}
-
-function buildHeaders(token) {
-  return {
-    Authorization: `Bearer ${token}`,
-    Version: getEnv("GHL_API_VERSION") || DEFAULT_API_VERSION,
-    Accept: "application/json",
-    "Content-Type": "application/json",
-  };
-}
-
-function getFieldValue(contact, key) {
-  const normalizedTarget = normalizeKey(key);
-
-  if (
-    contact &&
-    contact.customFields &&
-    typeof contact.customFields === "object" &&
-    !Array.isArray(contact.customFields)
-  ) {
-    if (contact.customFields[key] !== undefined && contact.customFields[key] !== null) {
-      return contact.customFields[key];
-    }
-
-    for (const [k, v] of Object.entries(contact.customFields)) {
-      if (normalizeKey(k) === normalizedTarget) return v;
-    }
-  }
-
-  if (Array.isArray(contact?.customFields)) {
-    for (const field of contact.customFields) {
-      const candidates = [
-        field?.key,
-        field?.name,
-        field?.fieldKey,
-        field?.customFieldKey,
-        field?.id,
-      ];
-
-      for (const candidate of candidates) {
-        if (normalizeKey(candidate) === normalizedTarget) {
-          return (
-            field?.value ??
-            field?.fieldValue ??
-            field?.field_value ??
-            field?.val ??
-            null
-          );
-        }
-      }
-    }
-  }
-
-  if (contact && contact[key] !== undefined && contact[key] !== null) {
-    return contact[key];
-  }
-
-  return undefined;
-}
-
-async function httpJson(method, url, headers, bodyObj) {
-  const init = { method, headers };
-  if (bodyObj !== undefined) init.body = JSON.stringify(bodyObj);
-
-  const res = await fetch(url, init);
-  const text = await res.text();
-  const parsed = safeJsonParse(text);
-  const json = parsed.ok ? parsed.value : null;
-
-  if (!res.ok) {
-    const err = new Error(`HTTP ${res.status} ${res.statusText} calling ${url}`);
-    err.status = res.status;
-    err.details = json || text;
-    throw err;
-  }
-
-  return json ?? {};
-}
-
-async function ghlRequest(path) {
+async function testRequest(path, token) {
   const base = getEnv("GHL_API_BASE") || DEFAULT_API_BASE;
-  const token = getEnv("GHL_SENTINEL_TOKEN", true);
-  return httpJson("GET", `${base}${path}`, buildHeaders(token));
-}
 
-async function postSentinel(payload) {
-  const url = getEnv("ACX_SENTINEL_WEBHOOK_URL") || DEFAULT_SENTINEL_URL;
-
-  const res = await fetch(url, {
-    method: "POST",
+  const res = await fetch(`${base}${path}`, {
+    method: "GET",
     headers: {
+      Authorization: `Bearer ${token}`,
+      Version: getEnv("GHL_API_VERSION") || DEFAULT_API_VERSION,
+      Accept: "application/json",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(payload),
   });
 
   const text = await res.text();
-  const parsed = safeJsonParse(text);
-  const json = parsed.ok ? parsed.value : null;
+  let parsed = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch (_) {}
 
-  if (!res.ok) {
-    const err = new Error(`Sentinel webhook failed: ${res.status}`);
-    err.status = res.status;
-    err.details = json || text;
-    throw err;
-  }
-
-  return json ?? {};
-}
-
-async function appendSentinelEvent(event) {
-  const store = getStore("acx-sentinel");
-  const now = new Date();
-  const yyyy = now.getUTCFullYear();
-  const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(now.getUTCDate()).padStart(2, "0");
-  const key = `sentinel/${yyyy}-${mm}-${dd}/events.ndjson`;
-
-  const line = JSON.stringify(event) + "\n";
-  const existing = (await store.get(key, { type: "text" })) || "";
-  await store.set(key, existing + line);
-}
-
-function buildRunId(contactId) {
-  return `watchdog-${Date.now()}-${contactId}`;
+  return {
+    ok: res.ok,
+    status: res.status,
+    body: parsed || text,
+  };
 }
 
 exports.handler = async () => {
   try {
     const locationId = getEnv("GHL_LOCATION_ID", true);
-    const data = await ghlRequest(`/contacts/?limit=100`);
-    const contacts = Array.isArray(data?.contacts) ? data.contacts : [];
-    const nowMs = Date.now();
+    const sentinelToken = getEnv("GHL_SENTINEL_TOKEN", true);
 
-    for (const c of contacts) {
-      try {
-        const contactId = c?.id;
-        if (!contactId) continue;
+    console.log("WATCHDOG_DIAG", {
+      using_env: "GHL_SENTINEL_TOKEN",
+      location_id: locationId,
+      token_preview: maskToken(sentinelToken),
+    });
 
-        const lastEventAt = getFieldValue(c, "acx_last_event_at");
-        const maxGapMinutes = coerceNumber(
-          getFieldValue(c, "acx_signal_expected_max_gap_minutes"),
-          30
-        );
-        const currentFailStreak = coerceNumber(
-          getFieldValue(c, "acx_fail_streak"),
-          0
-        );
-        const grantStatus =
-          getFieldValue(c, "acx_grant_status") || "unknown";
+    const result = await testRequest(`/contacts/?limit=1`, sentinelToken);
 
-        const runId = buildRunId(contactId);
-
-        let fail = false;
-        let reason = "within_gap";
-
-        if (!lastEventAt) {
-          fail = true;
-          reason = "missing_last_event";
-        } else {
-          const lastMs = new Date(lastEventAt).getTime();
-
-          if (Number.isNaN(lastMs)) {
-            fail = true;
-            reason = "invalid_last_event";
-          } else {
-            const diffMinutes = (nowMs - lastMs) / 60000;
-            if (diffMinutes > maxGapMinutes) {
-              fail = true;
-              reason = "gap_exceeded";
-            }
-          }
-        }
-
-        if (fail) {
-          const nextFailStreak = currentFailStreak + 1;
-
-          await appendSentinelEvent({
-            ts: isoNow(),
-            run_id: runId,
-            contact_id: contactId,
-            location_id: locationId,
-            event_type: "signal_stale",
-            status: "critical",
-            reason,
-            fail_streak: nextFailStreak,
-            grant_status: grantStatus,
-            last_event_at: lastEventAt || null,
-            max_gap_minutes: maxGapMinutes,
-          });
-
-          await postSentinel({
-            contact_id: contactId,
-            location_id: locationId,
-            run_id: runId,
-            status: "critical",
-            fail_streak: nextFailStreak,
-            grant_status: grantStatus,
-            last_event_at: lastEventAt || null,
-            reason,
-          });
-        } else {
-          await appendSentinelEvent({
-            ts: isoNow(),
-            run_id: runId,
-            contact_id: contactId,
-            location_id: locationId,
-            event_type: "signal_ok",
-            status: "optimal",
-            reason,
-            fail_streak: 0,
-            grant_status: grantStatus,
-            last_event_at: lastEventAt || null,
-            max_gap_minutes: maxGapMinutes,
-          });
-
-          await postSentinel({
-            contact_id: contactId,
-            location_id: locationId,
-            run_id: runId,
-            status: "optimal",
-            fail_streak: 0,
-            grant_status: grantStatus,
-            last_event_at: lastEventAt || null,
-            reason,
-          });
-        }
-      } catch (innerErr) {
-        console.error("WATCHDOG_CONTACT_ERROR", {
-          error: innerErr?.message || String(innerErr),
-          details: innerErr?.details || null,
-          status: innerErr?.status || null,
-        });
-      }
-    }
+    console.log("WATCHDOG_DIAG_RESULT", result);
 
     return {
-      statusCode: 200,
+      statusCode: result.ok ? 200 : 500,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        ok: true,
-        checked: contacts.length,
+        ok: result.ok,
+        using_env: "GHL_SENTINEL_TOKEN",
+        location_id: locationId,
+        token_preview: maskToken(sentinelToken),
+        result,
       }),
     };
   } catch (err) {
-    console.error("WATCHDOG_FATAL", {
-      error: err?.message || String(err),
-      details: err?.details || null,
-      status: err?.status || null,
+    console.error("WATCHDOG_DIAG_FATAL", {
+      error: err?.message || "unknown_error",
     });
 
     return {
