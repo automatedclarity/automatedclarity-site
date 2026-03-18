@@ -1,7 +1,7 @@
 // netlify/functions/acx-sentinel-watchdog.js
 // ACX Sentinel — Signal Watchdog (5-min loop)
 // + Blob event logging
-// + PIT-safe GHL contacts request
+// + dedicated Sentinel token only
 
 const { getStore } = require("@netlify/blobs");
 
@@ -10,7 +10,6 @@ const DEFAULT_API_VERSION = "2021-07-28";
 const DEFAULT_SENTINEL_URL =
   "https://console.automatedclarity.com/.netlify/functions/acx-sentinel-webhook";
 
-// -------------------- ENV --------------------
 function getEnv(name, required = false) {
   const v = process.env[name];
   if (required && (!v || !String(v).trim())) {
@@ -19,7 +18,6 @@ function getEnv(name, required = false) {
   return v;
 }
 
-// -------------------- HELPERS --------------------
 function safeJsonParse(raw) {
   try {
     return { ok: true, value: JSON.parse(raw) };
@@ -126,7 +124,7 @@ async function httpJson(method, url, headers, bodyObj) {
 
 async function ghlRequest(path) {
   const base = getEnv("GHL_API_BASE") || DEFAULT_API_BASE;
-  const token = getEnv("GHL_LOCATION_TOKEN", true);
+  const token = getEnv("GHL_SENTINEL_TOKEN", true);
   return httpJson("GET", `${base}${path}`, buildHeaders(token));
 }
 
@@ -172,25 +170,17 @@ function buildRunId(contactId) {
   return `watchdog-${Date.now()}-${contactId}`;
 }
 
-// -------------------- MAIN --------------------
 exports.handler = async () => {
   try {
     const locationId = getEnv("GHL_LOCATION_ID", true);
-
-    // PIT token is already location-scoped.
-    // Do NOT pass locationId in the query string here.
     const data = await ghlRequest(`/contacts/?limit=100`);
-
     const contacts = Array.isArray(data?.contacts) ? data.contacts : [];
     const nowMs = Date.now();
 
     for (const c of contacts) {
       try {
         const contactId = c?.id;
-        if (!contactId) {
-          console.error("WATCHDOG_SKIP_NO_CONTACT_ID");
-          continue;
-        }
+        if (!contactId) continue;
 
         const lastEventAt = getFieldValue(c, "acx_last_event_at");
         const maxGapMinutes = coerceNumber(
