@@ -2,6 +2,9 @@
 // ACX Sentinel — Contact Writeback (Production Safe)
 // + Matrix Event Writer
 // + Matrix Integrity POST (authoritative index writer)
+// + Blob event logging
+
+const { getStore } = require("@netlify/blobs");
 
 const DEFAULT_API_BASE = "https://services.leadconnectorhq.com";
 const DEFAULT_API_VERSION = "2021-07-28";
@@ -106,7 +109,20 @@ function isFailureEvent(payload, failStreak) {
   return BAD.has(s);
 }
 
-// 🔥 NEW — authoritative Matrix ingest
+async function appendSentinelEvent(event) {
+  const store = getStore("acx-sentinel");
+  const now = new Date();
+  const yyyy = now.getUTCFullYear();
+  const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(now.getUTCDate()).padStart(2, "0");
+  const key = `sentinel/${yyyy}-${mm}-${dd}/events.ndjson`;
+
+  const line = JSON.stringify(event) + "\n";
+  const existing = (await store.get(key, { type: "text" })) || "";
+  await store.set(key, existing + line);
+}
+
+// authoritative Matrix ingest
 async function postMatrixIntegrity({ account, location, integrity, run_id }) {
   try {
     const secret = (process.env.ACX_SECRET || "").trim();
@@ -161,7 +177,19 @@ exports.handler = async (event) => {
       pickFirst(payload, ["run_id"]) ||
       `sentinel-${Date.now()}-${contactId}`;
 
-    // 🔥 authoritative Matrix ingest
+    await appendSentinelEvent({
+      ts: new Date().toISOString(),
+      run_id: runId,
+      contact_id: contactId,
+      location_id: locationId,
+      event_type: failureEvent ? "signal_stale" : "signal_ok",
+      status: integrity,
+      reason: pickFirst(payload, ["reason"]) || (failureEvent ? "sentinel_failure_event" : "sentinel_healthy_event"),
+      fail_streak: failStreak,
+      grant_status: pickFirst(payload, ["grant_status"]) || "unknown",
+      last_event_at: pickFirst(payload, ["last_event_at"]) || null,
+    });
+
     await postMatrixIntegrity({
       account: String(pickFirst(payload, ["account"]) || "ACX"),
       location: String(locationId),
@@ -182,6 +210,7 @@ exports.handler = async (event) => {
     };
 
   } catch (err) {
+    console.error("SENTINEL_WEBHOOK_FATAL", err);
     return {
       statusCode: 500,
       headers: { "Content-Type": "application/json" },
