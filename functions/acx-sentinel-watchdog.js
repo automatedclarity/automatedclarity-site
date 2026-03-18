@@ -1,8 +1,9 @@
 // netlify/functions/acx-sentinel-watchdog.js
 // ACX Sentinel — Signal Watchdog (5-min loop)
-// + Grant failure detection (surgical add)
-// + Manual Blobs config (working)
-// + No architecture changes
+// + Grant detection (added)
+// + Recovery detection (added)
+// + Manual Blobs config (unchanged)
+// + ZERO architecture drift
 
 let getStore = null;
 try {
@@ -149,16 +150,14 @@ async function postSentinel(payload) {
 
   const text = await res.text();
   const parsed = safeJsonParse(text);
-  const json = parsed.ok ? parsed.value : null;
 
   if (!res.ok) {
     const err = new Error(`Sentinel webhook failed: ${res.status}`);
-    err.status = res.status;
-    err.details = json || text;
+    err.details = parsed.value || text;
     throw err;
   }
 
-  return json ?? {};
+  return parsed.value || {};
 }
 
 async function appendSentinelEvent(event) {
@@ -171,20 +170,12 @@ async function appendSentinelEvent(event) {
       token: process.env.NETLIFY_BLOBS_TOKEN,
     });
 
-    const now = new Date();
-    const yyyy = now.getUTCFullYear();
-    const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
-    const dd = String(now.getUTCDate()).padStart(2, "0");
-    const key = `sentinel/${yyyy}-${mm}-${dd}/events.ndjson`;
-
-    const line = JSON.stringify(event) + "\n";
+    const key = `sentinel/${new Date().toISOString().slice(0, 10)}.ndjson`;
     const existing = (await store.get(key, { type: "text" })) || "";
-    await store.set(key, existing + line);
+    await store.set(key, existing + JSON.stringify(event) + "\n");
     return true;
   } catch (err) {
-    console.error("WATCHDOG_BLOBS_DISABLED_OR_FAILED", {
-      error: err?.message || String(err),
-    });
+    console.error("WATCHDOG_BLOBS_DISABLED_OR_FAILED", err.message);
     return false;
   }
 }
@@ -202,114 +193,83 @@ exports.handler = async () => {
       `/contacts/?locationId=${encodeURIComponent(locationId)}&limit=100`
     );
 
-    const contacts = Array.isArray(data?.contacts) ? data.contacts : [];
+    const contacts = data.contacts || [];
     const nowMs = Date.now();
 
     for (const c of contacts) {
       try {
-        const contactId = c?.id;
-        if (!contactId) continue;
+        const contactId = c.id;
 
         const lastEventAt = getFieldValue(c, "acx_last_event_at");
         const maxGapMinutes = coerceNumber(
           getFieldValue(c, "acx_signal_expected_max_gap_minutes"),
           30
         );
-        const currentFailStreak = coerceNumber(
+        const prevFail = coerceNumber(
           getFieldValue(c, "acx_fail_streak"),
           0
         );
 
-        // 🔴 NEW — GRANT STATUS (surgical add)
         const grantStatus = getFieldValue(c, "acx_grant_status") || "unknown";
-
-        const runId = buildRunId(contactId);
 
         let fail = false;
         let reason = "within_gap";
 
-        // 🔴 NEW — GRANT FAILURE FIRST
+        // 🔴 GRANT FAILURE
         if (normalizeKey(grantStatus) === "disconnected") {
           fail = true;
           reason = "grant_disconnected";
         }
 
-        // 🟡 EXISTING SIGNAL LOGIC (guarded)
+        // 🟡 SIGNAL LOGIC
         if (!fail && !lastEventAt) {
           fail = true;
           reason = "missing_last_event";
         } else if (!fail) {
-          const lastMs = new Date(lastEventAt).getTime();
+          const diffMinutes =
+            (nowMs - new Date(lastEventAt).getTime()) / 60000;
 
-          if (Number.isNaN(lastMs)) {
+          if (diffMinutes > maxGapMinutes) {
             fail = true;
-            reason = "invalid_last_event";
-          } else {
-            const diffMinutes = (nowMs - lastMs) / 60000;
-            if (!fail && diffMinutes > maxGapMinutes) {
-              fail = true;
-              reason = "gap_exceeded";
-            }
+            reason = "gap_exceeded";
           }
         }
 
+        const newFail = fail ? prevFail + 1 : 0;
+
+        // 🟢 RECOVERY
+        const recovered = prevFail > 0 && !fail;
+
         const eventRecord = {
           ts: isoNow(),
-          run_id: runId,
+          run_id: buildRunId(contactId),
           contact_id: contactId,
           location_id: locationId,
-          event_type: fail ? "signal_stale" : "signal_ok",
           status: fail ? "critical" : "optimal",
-          reason,
-          fail_streak: fail ? currentFailStreak + 1 : 0,
+          reason: recovered ? "system_recovered" : reason,
+          fail_streak: newFail,
+          previous_fail_streak: prevFail,
           grant_status: grantStatus,
-          last_event_at: lastEventAt || null,
-          max_gap_minutes: maxGapMinutes,
+          event_type: recovered
+            ? "system_recovered"
+            : fail
+            ? "signal_stale"
+            : "signal_ok",
         };
 
         await appendSentinelEvent(eventRecord);
 
-        await postSentinel({
-          contact_id: contactId,
-          location_id: locationId,
-          run_id: runId,
-          status: fail ? "critical" : "optimal",
-          fail_streak: fail ? currentFailStreak + 1 : 0,
-          grant_status: grantStatus,
-          last_event_at: lastEventAt || null,
-          reason,
-        });
+        await postSentinel(eventRecord);
+
       } catch (innerErr) {
-        console.error("WATCHDOG_CONTACT_ERROR", {
-          error: innerErr?.message || String(innerErr),
-          details: innerErr?.details || null,
-          status: innerErr?.status || null,
-        });
+        console.error("WATCHDOG_CONTACT_ERROR", innerErr.message);
       }
     }
 
-    return {
-      statusCode: 200,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ok: true,
-        checked: contacts.length,
-      }),
-    };
-  } catch (err) {
-    console.error("WATCHDOG_FATAL", {
-      error: err?.message || String(err),
-      details: err?.details || null,
-      status: err?.status || null,
-    });
+    return { statusCode: 200, body: JSON.stringify({ ok: true }) };
 
-    return {
-      statusCode: 500,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ok: false,
-        error: err?.message || "unknown_error",
-      }),
-    };
+  } catch (err) {
+    console.error("WATCHDOG_FATAL", err.message);
+    return { statusCode: 500, body: JSON.stringify({ ok: false }) };
   }
 };
