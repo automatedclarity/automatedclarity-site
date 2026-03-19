@@ -1,7 +1,7 @@
 // netlify/functions/acx-sentinel-repair.js
 // ACX Sentinel — Repair Email Loop
 // Netlify is the brain:
-// - reads contact state
+// - receives current state from GHL webhook
 // - decides whether to send
 // - sends premium reconnect email via Mailgun
 // - updates GHL fields only after successful send
@@ -70,56 +70,6 @@ function pickFirst(obj, keys) {
     }
   }
   return undefined;
-}
-
-function fieldValue(contact, key) {
-  const target = normalizeKey(key);
-
-  if (
-    contact &&
-    contact.customFields &&
-    typeof contact.customFields === "object" &&
-    !Array.isArray(contact.customFields)
-  ) {
-    if (contact.customFields[key] !== undefined && contact.customFields[key] !== null) {
-      return contact.customFields[key];
-    }
-
-    for (const [k, v] of Object.entries(contact.customFields)) {
-      if (normalizeKey(k) === target) return v;
-    }
-  }
-
-  if (Array.isArray(contact?.customFields)) {
-    for (const field of contact.customFields) {
-      const keys = [
-        field?.key,
-        field?.name,
-        field?.fieldKey,
-        field?.customFieldKey,
-        field?.id,
-      ];
-
-      for (const k of keys) {
-        if (normalizeKey(k) === target) {
-          return field?.value ?? field?.fieldValue ?? field?.field_value ?? null;
-        }
-      }
-    }
-  }
-
-  return undefined;
-}
-
-async function ghlGetContact(contactId) {
-  const base = getEnv("GHL_API_BASE") || DEFAULT_API_BASE;
-  const token = getEnv("GHL_SENTINEL_TOKEN", true);
-
-  return httpJson(
-    "GET",
-    `${base}/contacts/${contactId}`,
-    buildHeaders(token)
-  );
 }
 
 async function ghlUpdateContact(contactId, body) {
@@ -226,6 +176,7 @@ exports.handler = async (event) => {
     }
 
     const payload = parsed.value;
+
     const contactId = pickFirst(payload, ["contact_id"]);
     if (!contactId) {
       return {
@@ -236,12 +187,21 @@ exports.handler = async (event) => {
 
     const reconnectUrl = getEnv("ACX_RECONNECT_URL", true);
 
-    const contactRes = await ghlGetContact(contactId);
-    const contact = contactRes.contact || contactRes;
-
+    const sentinelStatus = normalizeKey(
+      pickFirst(payload, ["acx_sentinel_status"]) || "unknown"
+    );
+    const grantStatus = normalizeKey(
+      pickFirst(payload, ["acx_grant_status"]) || "unknown"
+    );
+    const failStreak = Number(
+      pickFirst(payload, ["acx_fail_streak"]) || 0
+    );
+    const repairLastSent = pickFirst(payload, ["acx_repair_last_sent"]);
     const notifyEmail =
-      fieldValue(contact, "acx_client_notify_email") ||
-      contact.email;
+      pickFirst(payload, ["acx_client_notify_email"]) ||
+      pickFirst(payload, ["contact_email"]);
+    const companyName =
+      pickFirst(payload, ["acx_company_name"]) || "your system";
 
     if (!notifyEmail) {
       console.log("ACX_SENTINEL_REPAIR_SKIP", {
@@ -255,18 +215,6 @@ exports.handler = async (event) => {
       };
     }
 
-    const sentinelStatus = normalizeKey(fieldValue(contact, "acx_sentinel_status") || "unknown");
-    const grantStatus = normalizeKey(fieldValue(contact, "acx_grant_status") || "unknown");
-    const failStreak = Number(fieldValue(contact, "acx_fail_streak") || 0);
-    const repairLastSent = fieldValue(contact, "acx_repair_last_sent");
-    const companyName =
-      fieldValue(contact, "acx_company_name") ||
-      contact.companyName ||
-      contact.name ||
-      "your system";
-
-    // Netlify is the brain:
-    // only send if system is actually in repair-worthy state
     const shouldSend =
       sentinelStatus === "critical" &&
       (grantStatus === "disconnected" || failStreak >= 3) &&
@@ -316,6 +264,7 @@ exports.handler = async (event) => {
     console.log("ACX_SENTINEL_REPAIR_SENT", {
       contact_id: contactId,
       sent_to: notifyEmail,
+      sentinel_status: sentinelStatus,
       grant_status: grantStatus,
       fail_streak: failStreak,
     });
