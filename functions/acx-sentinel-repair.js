@@ -1,7 +1,10 @@
 // netlify/functions/acx-sentinel-repair.js
 // ACX Sentinel — Repair Email Loop
-// Sends premium reconnect email via Mailgun
-// Updates GHL contact fields to prevent spam
+// Netlify is the brain:
+// - reads contact state
+// - decides whether to send
+// - sends premium reconnect email via Mailgun
+// - updates GHL fields only after successful send
 
 const DEFAULT_API_BASE = "https://services.leadconnectorhq.com";
 const DEFAULT_API_VERSION = "2021-07-28";
@@ -81,6 +84,7 @@ function fieldValue(contact, key) {
     if (contact.customFields[key] !== undefined && contact.customFields[key] !== null) {
       return contact.customFields[key];
     }
+
     for (const [k, v] of Object.entries(contact.customFields)) {
       if (normalizeKey(k) === target) return v;
     }
@@ -95,6 +99,7 @@ function fieldValue(contact, key) {
         field?.customFieldKey,
         field?.id,
       ];
+
       for (const k of keys) {
         if (normalizeKey(k) === target) {
           return field?.value ?? field?.fieldValue ?? field?.field_value ?? null;
@@ -109,6 +114,7 @@ function fieldValue(contact, key) {
 async function ghlGetContact(contactId) {
   const base = getEnv("GHL_API_BASE") || DEFAULT_API_BASE;
   const token = getEnv("GHL_SENTINEL_TOKEN", true);
+
   return httpJson(
     "GET",
     `${base}/contacts/${contactId}`,
@@ -119,6 +125,7 @@ async function ghlGetContact(contactId) {
 async function ghlUpdateContact(contactId, body) {
   const base = getEnv("GHL_API_BASE") || DEFAULT_API_BASE;
   const token = getEnv("GHL_SENTINEL_TOKEN", true);
+
   return httpJson(
     "PUT",
     `${base}/contacts/${contactId}`,
@@ -180,8 +187,6 @@ function renderReconnectEmail({ reconnectUrl, companyName }) {
 async function sendMailgunEmail({ to, subject, html }) {
   const domain = getEnv("MAILGUN_DOMAIN", true);
   const apiKey = getEnv("MAILGUN_API_KEY", true);
-
-  // Must remain your approved outbound sender
   const fromEmail = getEnv("CLIENT_FROM_EMAIL", true);
   const fromName = getEnv("CLIENT_FROM_NAME") || "Automated Clarity";
 
@@ -239,12 +244,18 @@ exports.handler = async (event) => {
       contact.email;
 
     if (!notifyEmail) {
+      console.log("ACX_SENTINEL_REPAIR_SKIP", {
+        contact_id: contactId,
+        reason: "no_notify_email",
+      });
+
       return {
         statusCode: 200,
         body: JSON.stringify({ ok: true, skipped: "no_notify_email" }),
       };
     }
 
+    const sentinelStatus = normalizeKey(fieldValue(contact, "acx_sentinel_status") || "unknown");
     const grantStatus = normalizeKey(fieldValue(contact, "acx_grant_status") || "unknown");
     const failStreak = Number(fieldValue(contact, "acx_fail_streak") || 0);
     const repairLastSent = fieldValue(contact, "acx_repair_last_sent");
@@ -254,16 +265,29 @@ exports.handler = async (event) => {
       contact.name ||
       "your system";
 
+    // Netlify is the brain:
+    // only send if system is actually in repair-worthy state
     const shouldSend =
-      grantStatus === "disconnected" &&
-      (daysSince(repairLastSent) >= 1 || failStreak >= 3);
+      sentinelStatus === "critical" &&
+      (grantStatus === "disconnected" || failStreak >= 3) &&
+      daysSince(repairLastSent) >= 1;
 
     if (!shouldSend) {
+      console.log("ACX_SENTINEL_REPAIR_SKIP", {
+        contact_id: contactId,
+        reason: "conditions_not_met",
+        sentinel_status: sentinelStatus,
+        grant_status: grantStatus,
+        fail_streak: failStreak,
+        days_since_last_sent: daysSince(repairLastSent),
+      });
+
       return {
         statusCode: 200,
         body: JSON.stringify({
           ok: true,
           skipped: "conditions_not_met",
+          sentinel_status: sentinelStatus,
           grant_status: grantStatus,
           fail_streak: failStreak,
         }),
@@ -287,6 +311,13 @@ exports.handler = async (event) => {
         { key: "acx_repair_last_sent", field_value: todayDateString() },
         { key: "acx_repair_status", field_value: "sent" },
       ],
+    });
+
+    console.log("ACX_SENTINEL_REPAIR_SENT", {
+      contact_id: contactId,
+      sent_to: notifyEmail,
+      grant_status: grantStatus,
+      fail_streak: failStreak,
     });
 
     return {
