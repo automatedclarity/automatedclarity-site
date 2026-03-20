@@ -1,496 +1,554 @@
 // netlify/functions/acx-sentinel-repair.js
-// ACX Sentinel — Repair Email Loop
-// Netlify is the brain:
-// - receives current state from GHL webhook
-// - decides whether to send
-// - creates a tokenized reconnect incident
-// - sends premium reconnect email via Mailgun
-// - updates GHL fields only after successful send
-
-let getStore = null;
-try {
-  ({ getStore } = require("@netlify/blobs"));
-} catch (_) {
-  getStore = null;
-}
+// ACX Sentinel Repair Loop
+// Creates an incident record, builds a signed reconnect link, sends premium Mailgun email,
+// and optionally updates the GHL contact if token + field IDs are configured.
+//
+// Locked assumptions:
+// - Netlify is the brain
+// - GHL is trigger layer only
+// - Mailgun is delivery
+// - All outbound sender remains: no-reply@mg.automatedclarity.com
+// - Reconnect page base/path comes from ACX_RECONNECT_URL
+//
+// Required env:
+// - MAILGUN_API_KEY
+// - MAILGUN_DOMAIN
+// - ACX_RECONNECT_URL
+//
+// Optional env:
+// - ACX_BLOBS_STORE                (default: "acx-sentinel")
+// - GHL_SENTINEL_TOKEN             (optional, only for contact update)
+// - GHL_LOCATION_ID                (optional fallback)
+// - ACX_SENTINEL_LAST_INCIDENT_CF_ID
+// - ACX_SENTINEL_LAST_REPAIR_AT_CF_ID
+// - ACX_SENTINEL_LAST_REPAIR_STATUS_CF_ID
 
 const crypto = require("crypto");
+const querystring = require("querystring");
+const { getStore } = require("@netlify/blobs");
 
-const DEFAULT_API_BASE = "https://services.leadconnectorhq.com";
-const DEFAULT_API_VERSION = "2021-07-28";
-const LOGO_URL = "https://notify.automatedclarity.com/assets/acx-logo-dark.png?v=5";
-const FOOTER_LABEL = "Automated Clarity™ Monitoring";
+const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
+const FROM_EMAIL = "no-reply@mg.automatedclarity.com";
+const BLOBS_STORE_NAME = process.env.ACX_BLOBS_STORE || "acx-sentinel";
+const GHL_BASE = "https://services.leadconnectorhq.com";
 
-// -------------------- helpers --------------------
-function getEnv(name, required = false) {
-  const v = process.env[name];
-  if (required && (!v || !String(v).trim())) {
-    throw new Error(`Missing env var: ${name}`);
-  }
-  return v;
-}
-
-function safeJsonParse(raw) {
-  try {
-    return { ok: true, value: JSON.parse(raw) };
-  } catch (e) {
-    return { ok: false, error: e };
-  }
-}
-
-function normalizeKey(s) {
-  return String(s || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "_")
-    .replace(/[^a-z0-9_]/g, "_")
-    .replace(/_+/g, "_")
-    .replace(/^_+|_+$/g, "");
-}
-
-function escapeHtml(str) {
-  return String(str || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function base64(s) {
-  return Buffer.from(String(s), "utf8").toString("base64");
-}
-
-function buildHeaders(token) {
+function json(statusCode, body) {
   return {
-    Authorization: `Bearer ${token}`,
-    Version: getEnv("GHL_API_VERSION") || DEFAULT_API_VERSION,
-    Accept: "application/json",
-    "Content-Type": "application/json",
+    statusCode,
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
   };
 }
 
-async function httpJson(method, url, headers, bodyObj) {
-  const init = { method, headers };
-  if (bodyObj !== undefined) init.body = JSON.stringify(bodyObj);
+function asArray(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  return [value];
+}
 
-  const res = await fetch(url, init);
-  const text = await res.text();
-  const parsed = safeJsonParse(text);
-  const json = parsed.ok ? parsed.value : null;
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return "";
+}
 
-  if (!res.ok) {
-    const err = new Error(`HTTP ${res.status} ${res.statusText} calling ${url}`);
-    err.status = res.status;
-    err.details = json || text;
-    throw err;
+function toInt(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeEmail(value) {
+  const email = String(value || "").trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : "";
+}
+
+function escapeHtml(input) {
+  return String(input || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function maskEmail(email) {
+  const clean = normalizeEmail(email);
+  if (!clean) return "";
+  const [local, domain] = clean.split("@");
+  if (!local || !domain) return clean;
+  if (local.length <= 2) return `${local[0] || "*"}*@${domain}`;
+  return `${local.slice(0, 2)}***@${domain}`;
+}
+
+function parseMaybeJson(value, fallback) {
+  if (value == null || value === "") return fallback;
+  if (typeof value === "object") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+async function readBody(event) {
+  const contentType = String(
+    event.headers["content-type"] || event.headers["Content-Type"] || ""
+  ).toLowerCase();
+
+  const raw = event.body || "";
+  if (!raw) return {};
+
+  if (contentType.includes("application/json")) {
+    return parseMaybeJson(raw, {});
   }
 
-  return json ?? {};
-}
-
-function pickFirst(obj, keys) {
-  for (const k of keys) {
-    if (obj && obj[k] !== undefined && obj[k] !== null && String(obj[k]).trim() !== "") {
-      return obj[k];
-    }
-  }
-  return undefined;
-}
-
-function daysSince(dateStr) {
-  if (!dateStr) return 9999;
-  const d = new Date(dateStr);
-  if (Number.isNaN(d.getTime())) return 9999;
-  return (Date.now() - d.getTime()) / 86400000;
-}
-
-function todayDateString() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function createIncidentId() {
-  return crypto.randomBytes(24).toString("hex");
-}
-
-function parseConnectionsFromPayload(payload) {
-  // Preferred: direct array
-  if (Array.isArray(payload?.connections)) {
-    return payload.connections
-      .map((c, idx) => ({
-        id: String(c.id || `conn_${idx + 1}`),
-        email: String(c.email || "").trim(),
-        provider: String(c.provider || "").trim(),
-        status: normalizeKey(c.status || "disconnected"),
-        grant_status: normalizeKey(c.grant_status || c.status || "disconnected"),
-      }))
-      .filter((c) => c.email);
+  if (
+    contentType.includes("application/x-www-form-urlencoded") ||
+    contentType.includes("multipart/form-data")
+  ) {
+    return querystring.parse(raw);
   }
 
-  // Preferred: JSON string from GHL webhook custom data
-  const rawJson = pickFirst(payload, ["acx_connections_json", "connections_json"]);
-  if (rawJson) {
-    const parsed = safeJsonParse(rawJson);
-    if (parsed.ok && Array.isArray(parsed.value)) {
-      return parsed.value
-        .map((c, idx) => ({
-          id: String(c.id || `conn_${idx + 1}`),
-          email: String(c.email || "").trim(),
-          provider: String(c.provider || "").trim(),
-          status: normalizeKey(c.status || "disconnected"),
-          grant_status: normalizeKey(c.grant_status || c.status || "disconnected"),
-        }))
-        .filter((c) => c.email);
-    }
-  }
+  return parseMaybeJson(raw, {});
+}
 
-  // Fallback single affected inbox if passed
-  const singleEmail = pickFirst(payload, [
-    "affected_inbox_email",
-    "acx_affected_inbox_email",
-    "inbox_email",
-  ]);
+function buildInboxList(body, fallbackEmail) {
+  const parsed =
+    parseMaybeJson(body.inboxes, null) ||
+    parseMaybeJson(body.affected_inboxes, null) ||
+    parseMaybeJson(body.monitored_inboxes, null);
 
-  if (singleEmail) {
-    return [{
-      id: "conn_1",
-      email: singleEmail,
-      provider: String(pickFirst(payload, ["provider", "acx_provider"]) || "").trim(),
+  const rawList = Array.isArray(parsed) ? parsed : [];
+  const normalized = rawList
+    .map((item, index) => {
+      if (typeof item === "string") {
+        const email = normalizeEmail(item);
+        if (!email) return null;
+        return {
+          key: email,
+          label: `Inbox ${index + 1}`,
+          email,
+          status: "disconnected",
+          grant_id: "",
+          reconnected_at: "",
+        };
+      }
+
+      if (item && typeof item === "object") {
+        const email = normalizeEmail(
+          item.email || item.address || item.key || item.inbox || item.value
+        );
+        if (!email) return null;
+        return {
+          key: email,
+          label: firstNonEmpty(item.label, item.name, item.type, `Inbox ${index + 1}`),
+          email,
+          status: firstNonEmpty(item.status, "disconnected"),
+          grant_id: firstNonEmpty(item.grant_id, item.grantId),
+          reconnected_at: firstNonEmpty(item.reconnected_at, item.reconnectedAt),
+        };
+      }
+
+      return null;
+    })
+    .filter(Boolean);
+
+  if (normalized.length) return normalized;
+
+  const email = normalizeEmail(
+    firstNonEmpty(
+      body.inbox_email,
+      body.monitored_email,
+      body.observed_email,
+      body.email_account,
+      fallbackEmail
+    )
+  );
+
+  if (!email) return [];
+
+  return [
+    {
+      key: email,
+      label: "Primary inbox",
+      email,
       status: "disconnected",
-      grant_status: "disconnected",
-    }];
-  }
-
-  // Final fallback: use notify email as visible placeholder
-  const notifyEmail = pickFirst(payload, ["acx_client_notify_email", "contact_email"]);
-  if (notifyEmail) {
-    return [{
-      id: "conn_1",
-      email: notifyEmail,
-      provider: "",
-      status: "disconnected",
-      grant_status: "disconnected",
-    }];
-  }
-
-  return [];
+      grant_id: "",
+      reconnected_at: "",
+    },
+  ];
 }
 
-function footerBarHtml() {
-  return `
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0"
-      style="margin-top:14px; border-collapse:collapse; background:#0b1220; border-radius:10px;">
+function buildIncidentRecord(body) {
+  const now = new Date();
+  const expires = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+  const contactId = firstNonEmpty(body.contact_id, body.contactId, body.ghl_contact_id);
+  const locationId = firstNonEmpty(
+    body.location_id,
+    body.locationId,
+    body.ghl_location_id,
+    process.env.GHL_LOCATION_ID
+  );
+  const contactEmail = normalizeEmail(
+    firstNonEmpty(
+      body.sent_to,
+      body.notify_email,
+      body.email,
+      body.contact_email,
+      body.contactEmail,
+      body.recipient_email
+    )
+  );
+
+  const incidentId = `acx_inc_${now.getTime()}_${crypto.randomBytes(4).toString("hex")}`;
+  const token = crypto.randomBytes(24).toString("hex");
+
+  const sentinelStatus = firstNonEmpty(body.sentinel_status, body.status, "critical");
+  const grantStatus = firstNonEmpty(body.grant_status, body.connection_status, "disconnected");
+  const failStreak = toInt(body.fail_streak || body.failStreak || body.fail_count, 0);
+  const clientSlug = firstNonEmpty(body.client_slug, body.clientSlug);
+  const contactName = firstNonEmpty(body.contact_name, body.contactName, "there");
+  const companyName = firstNonEmpty(body.company_name, body.companyName, body.account_name);
+  const inboxes = buildInboxList(body, contactEmail);
+
+  return {
+    incident_id: incidentId,
+    token,
+    created_at: now.toISOString(),
+    expires_at: expires.toISOString(),
+    contact_id: contactId,
+    location_id: locationId,
+    client_slug: clientSlug,
+    contact_name: contactName,
+    company_name: companyName,
+    notify_email: contactEmail,
+    sentinel_status: sentinelStatus,
+    grant_status: grantStatus,
+    fail_streak: failStreak,
+    inboxes,
+    source: {
+      workflow: firstNonEmpty(body.workflow_name, body.workflow, "ACX | Sentinel | Repair Loop (v1)"),
+      trigger: firstNonEmpty(body.trigger_name, body.trigger, "webhook"),
+    },
+    status: "open",
+    repaired_at: "",
+    repair_started_at: "",
+  };
+}
+
+async function storeIncident(record) {
+  const store = getStore(BLOBS_STORE_NAME);
+  const key = `sentinel/incidents/${record.incident_id}.json`;
+  await store.set(key, JSON.stringify(record), {
+    metadata: {
+      type: "sentinel_reconnect_incident",
+      incident_id: record.incident_id,
+      contact_id: record.contact_id || "",
+      location_id: record.location_id || "",
+      notify_email: record.notify_email || "",
+      status: record.status || "open",
+    },
+  });
+  return key;
+}
+
+function buildReconnectUrl(record) {
+  const reconnectBase = firstNonEmpty(process.env.ACX_RECONNECT_URL);
+  if (!reconnectBase) {
+    throw new Error("Missing env var: ACX_RECONNECT_URL");
+  }
+
+  const url = new URL(reconnectBase);
+  url.searchParams.set("incident", record.incident_id);
+  url.searchParams.set("token", record.token);
+  return url.toString();
+}
+
+function buildInboxRows(inboxes) {
+  if (!Array.isArray(inboxes) || !inboxes.length) {
+    return `
       <tr>
-        <td style="padding:14px 16px; vertical-align:middle;">
-          <img src="${escapeHtml(LOGO_URL)}"
-               alt="Automated Clarity"
-               width="140"
-               style="display:block; border:0; outline:none; text-decoration:none; height:auto;" />
+        <td style="padding:14px 16px;border-bottom:1px solid #e5e7eb;font-size:14px;color:#111827;">
+          Unable to detect inboxes from this incident.
         </td>
-        <td style="padding:14px 16px; vertical-align:middle; text-align:right; color:#9ca3af; font-size:12px; letter-spacing:.2px;">
-          ${escapeHtml(FOOTER_LABEL)}
+        <td style="padding:14px 16px;border-bottom:1px solid #e5e7eb;font-size:14px;color:#b91c1c;text-align:right;">
+          Attention required
         </td>
       </tr>
-    </table>
-  `.trim();
-}
+    `;
+  }
 
-function renderReconnectEmail({ reconnectUrl, companyName, connections }) {
-  const safeReconnectUrl = escapeHtml(reconnectUrl || "");
-  const safeCompany = escapeHtml(companyName || "your system");
-  const affectedCount = connections.filter((c) => normalizeKey(c.status) === "disconnected").length;
-  const affectedLabel = affectedCount === 1 ? "1 inbox requires attention" : `${affectedCount} inboxes require attention`;
-
-  const rowsHtml = connections
-    .slice(0, 4)
-    .map((c) => {
-      const isDown = normalizeKey(c.status) === "disconnected";
-      const pillBg = isDown ? "#fee2e2" : "#dcfce7";
-      const pillColor = isDown ? "#991b1b" : "#166534";
-      const pillText = isDown ? "Disconnected" : "Connected";
+  return inboxes
+    .map((inbox) => {
+      const status = String(inbox.status || "disconnected").toLowerCase();
+      const statusLabel = status === "connected" ? "Connected" : "Reconnect required";
+      const statusColor = status === "connected" ? "#166534" : "#b91c1c";
+      const statusBg = status === "connected" ? "#dcfce7" : "#fee2e2";
 
       return `
         <tr>
-          <td style="padding:10px 0; border-bottom:1px solid #eef0f3; color:#111827; font-size:14px;">
-            ${escapeHtml(c.email)}
+          <td style="padding:14px 16px;border-bottom:1px solid #e5e7eb;">
+            <div style="font-size:14px;font-weight:600;color:#111827;">${escapeHtml(
+              inbox.label || "Inbox"
+            )}</div>
+            <div style="font-size:13px;color:#6b7280;margin-top:4px;">${escapeHtml(
+              maskEmail(inbox.email || inbox.key || "")
+            )}</div>
           </td>
-          <td style="padding:10px 0; border-bottom:1px solid #eef0f3; text-align:right;">
-            <span style="display:inline-block; padding:5px 9px; border-radius:999px; background:${pillBg}; color:${pillColor}; font-size:12px; font-weight:700;">
-              ${pillText}
+          <td style="padding:14px 16px;border-bottom:1px solid #e5e7eb;text-align:right;">
+            <span style="display:inline-block;padding:6px 10px;border-radius:999px;font-size:12px;font-weight:700;color:${statusColor};background:${statusBg};">
+              ${statusLabel}
             </span>
           </td>
         </tr>
       `;
     })
     .join("");
+}
+
+function buildEmailHtml({ record, reconnectUrl }) {
+  const contactName = escapeHtml(record.contact_name || "there");
+  const companyName = escapeHtml(record.company_name || "your system");
+  const failStreakLabel = escapeHtml(String(record.fail_streak || 0));
+  const inboxRows = buildInboxRows(record.inboxes);
 
   return `
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <meta charset="utf-8" />
-      </head>
-      <body style="margin:0; padding:0; background:#f4f6f8; font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;">
-        <div style="padding:24px 12px;">
-          <div style="max-width:560px; margin:0 auto; background:#ffffff; border-radius:14px; box-shadow:0 6px 20px rgba(0,0,0,.06); overflow:hidden;">
-            <div style="height:6px; background:#f59e0b;"></div>
-
-            <div style="padding:26px;">
-              <div style="margin:0 0 10px 0;">
-                <span style="display:inline-block; padding:6px 10px; border-radius:999px; background:#fef3c7; color:#92400e; font-size:12px; font-weight:700;">
-                  Action Required
-                </span>
-              </div>
-
-              <h2 style="margin:0 0 14px 0; font-size:22px; font-weight:700; letter-spacing:-0.2px; color:#111827;">
-                Inbox connection interrupted
-              </h2>
-
-              <p style="margin:0 0 16px 0; color:#555;">
-                We detected a connection interruption affecting ${safeCompany}.
-              </p>
-
-              <p style="margin:0 0 18px 0; color:#555;">
-                This usually happens after a password change, mailbox security update, or a reauthorization requirement.
-              </p>
-
-              <div style="border:1px solid #e7e7e7; border-radius:10px; padding:16px; margin-bottom:18px;">
-                <div style="margin:0 0 10px 0;"><strong>Status:</strong> ${escapeHtml(affectedLabel)}</div>
-                <div style="margin:0 0 12px 0;"><strong>Impact:</strong> New email activity may not be fully monitored until disconnected inboxes are restored</div>
-
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
-                  ${rowsHtml}
-                </table>
-              </div>
-
-              <p style="margin:18px 0 14px 0; color:#111; font-weight:700;">
-                Review the affected inboxes and reconnect the ones that require attention.
-              </p>
-
-              <div style="border:1px solid #e7e7e7; border-radius:10px; padding:18px; margin-top:10px;">
-                <div style="font-weight:700; margin-bottom:10px;">Reconnect control</div>
-                <div style="color:#444; margin-bottom:14px;">
-                  Open the secure recovery page below to review affected inboxes and restore monitoring.
-                </div>
-
-                <a href="${safeReconnectUrl}"
-                   style="display:inline-block; padding:12px 22px; background:#fff7ed; color:#9a3412; border-radius:8px;
-                          text-decoration:none; font-weight:700; border:1px solid #fdba74;">
-                  Review and reconnect inboxes
-                </a>
-
-                <div style="margin-top:10px; color:#777; font-size:12px;">
-                  This link is for this incident only and will expire automatically.
-                </div>
-              </div>
-
-              ${footerBarHtml()}
-            </div>
+<!doctype html>
+<html>
+  <body style="margin:0;padding:0;background:#f5f7fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#111827;">
+    <div style="padding:32px 16px;">
+      <div style="max-width:720px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:22px;overflow:hidden;box-shadow:0 14px 40px rgba(15,23,42,0.08);">
+        <div style="padding:28px 28px 18px 28px;background:linear-gradient(180deg,#0f172a 0%,#111827 100%);">
+          <div style="font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#cbd5e1;font-weight:700;">Automated Clarity</div>
+          <div style="margin-top:12px;font-size:30px;line-height:1.15;font-weight:800;color:#ffffff;">
+            Action needed to restore inbox protection
+          </div>
+          <div style="margin-top:12px;font-size:15px;line-height:1.6;color:#cbd5e1;">
+            ACX Sentinel detected a disconnected email connection. Monitoring and routing protection may be reduced until the affected inboxes are reconnected.
           </div>
         </div>
-      </body>
-    </html>
+
+        <div style="padding:28px;">
+          <div style="font-size:15px;line-height:1.7;color:#374151;">
+            Hi ${contactName},
+          </div>
+
+          <div style="margin-top:14px;font-size:15px;line-height:1.8;color:#374151;">
+            We detected a connection issue affecting <strong style="color:#111827;">${companyName}</strong>.
+            This incident has triggered automatically after <strong style="color:#111827;">${failStreakLabel}</strong> failed recovery check(s).
+          </div>
+
+          <div style="margin-top:22px;border:1px solid #e5e7eb;border-radius:18px;overflow:hidden;">
+            <div style="padding:14px 16px;background:#f8fafc;font-size:13px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#475569;">
+              Inbox status
+            </div>
+            <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+              ${inboxRows}
+            </table>
+          </div>
+
+          <div style="margin-top:24px;padding:18px 18px;border-radius:18px;background:#f8fafc;border:1px solid #e5e7eb;">
+            <div style="font-size:14px;font-weight:700;color:#111827;">What happens next</div>
+            <div style="margin-top:8px;font-size:14px;line-height:1.7;color:#475569;">
+              Use the secure reconnect link below to restore the affected inboxes. This link opens your incident-specific recovery page and is not a general dashboard.
+            </div>
+          </div>
+
+          <div style="margin-top:28px;text-align:center;">
+            <a href="${escapeHtml(
+              reconnectUrl
+            )}" style="display:inline-block;padding:16px 28px;border-radius:14px;background:#111827;color:#ffffff;text-decoration:none;font-size:15px;font-weight:800;">
+              Restore email connection
+            </a>
+          </div>
+
+          <div style="margin-top:16px;font-size:12px;line-height:1.6;color:#6b7280;text-align:center;">
+            This secure link expires automatically and is tied to this incident.
+          </div>
+
+          <div style="margin-top:28px;padding-top:20px;border-top:1px solid #e5e7eb;font-size:12px;line-height:1.7;color:#6b7280;">
+            Incident ID: ${escapeHtml(record.incident_id)}<br>
+            Status: ${escapeHtml(record.sentinel_status)} / ${escapeHtml(record.grant_status)}
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
   `.trim();
 }
 
-async function sendMailgunEmail({ to, subject, html }) {
-  const domain = getEnv("MAILGUN_DOMAIN", true);
-  const apiKey = getEnv("MAILGUN_API_KEY", true);
-  const fromEmail = getEnv("CLIENT_FROM_EMAIL", true);
-  const fromName = getEnv("CLIENT_FROM_NAME") || "Automated Clarity";
+function buildEmailText({ record, reconnectUrl }) {
+  const inboxLines =
+    Array.isArray(record.inboxes) && record.inboxes.length
+      ? record.inboxes.map((i) => `- ${i.label}: ${i.email} (${i.status})`).join("\n")
+      : "- Unable to detect inboxes from this incident";
+
+  return [
+    "Automated Clarity",
+    "",
+    "Action needed to restore inbox protection.",
+    "",
+    `Incident ID: ${record.incident_id}`,
+    `Sentinel status: ${record.sentinel_status}`,
+    `Grant status: ${record.grant_status}`,
+    `Failed checks: ${record.fail_streak}`,
+    "",
+    "Affected inboxes:",
+    inboxLines,
+    "",
+    `Reconnect now: ${reconnectUrl}`,
+  ].join("\n");
+}
+
+async function sendMailgunEmail({ to, subject, html, text }) {
+  const apiKey = firstNonEmpty(process.env.MAILGUN_API_KEY);
+  const domain = firstNonEmpty(process.env.MAILGUN_DOMAIN);
+
+  if (!apiKey) throw new Error("Missing env var: MAILGUN_API_KEY");
+  if (!domain) throw new Error("Missing env var: MAILGUN_DOMAIN");
+  if (!normalizeEmail(to)) throw new Error("Missing or invalid recipient email");
 
   const form = new URLSearchParams();
-  form.append("from", `${fromName} <${fromEmail}>`);
-  form.append("to", to);
-  form.append("subject", subject);
-  form.append("html", html);
+  form.set("from", `Automated Clarity <${FROM_EMAIL}>`);
+  form.set("to", to);
+  form.set("subject", subject);
+  form.set("html", html);
+  form.set("text", text);
 
   const res = await fetch(`https://api.mailgun.net/v3/${domain}/messages`, {
     method: "POST",
     headers: {
-      Authorization: "Basic " + base64(`api:${apiKey}`),
+      Authorization: `Basic ${Buffer.from(`api:${apiKey}`).toString("base64")}`,
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: form.toString(),
   });
 
-  const text = await res.text();
+  const body = await res.text();
   if (!res.ok) {
-    const err = new Error(`Mailgun failed: ${res.status}`);
-    err.details = text;
-    throw err;
+    throw new Error(`Mailgun send failed: ${res.status} ${body}`);
   }
 
-  return text;
+  return body;
 }
 
-function getBlobStore() {
-  if (!getStore) throw new Error("Netlify Blobs is not available");
-  return getStore({
-    name: "acx-sentinel",
-    siteID: process.env.NETLIFY_SITE_ID,
-    token: process.env.NETLIFY_BLOBS_TOKEN,
+async function updateGhlContactIfConfigured({ record }) {
+  const token = firstNonEmpty(process.env.GHL_SENTINEL_TOKEN);
+  if (!token || !record.contact_id) return { skipped: true };
+
+  const customFields = [];
+  const incidentFieldId = firstNonEmpty(process.env.ACX_SENTINEL_LAST_INCIDENT_CF_ID);
+  const repairAtFieldId = firstNonEmpty(process.env.ACX_SENTINEL_LAST_REPAIR_AT_CF_ID);
+  const statusFieldId = firstNonEmpty(process.env.ACX_SENTINEL_LAST_REPAIR_STATUS_CF_ID);
+
+  if (incidentFieldId) {
+    customFields.push({ id: incidentFieldId, field_value: record.incident_id });
+  }
+  if (repairAtFieldId) {
+    customFields.push({ id: repairAtFieldId, field_value: record.created_at });
+  }
+  if (statusFieldId) {
+    customFields.push({ id: statusFieldId, field_value: "sent" });
+  }
+
+  if (!customFields.length) return { skipped: true };
+
+  const res = await fetch(`${GHL_BASE}/contacts/${encodeURIComponent(record.contact_id)}`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Version: "2021-07-28",
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      customFields,
+    }),
   });
+
+  const text = await res.text();
+  if (!res.ok) {
+    return {
+      skipped: false,
+      ok: false,
+      status: res.status,
+      body: text,
+    };
+  }
+
+  return {
+    skipped: false,
+    ok: true,
+  };
 }
 
-async function writeIncident(incidentId, record) {
-  const store = getBlobStore();
-  const key = `reconnect/incidents/${incidentId}.json`;
-  await store.setJSON(key, record);
-  return key;
-}
-
-// -------------------- handler --------------------
 exports.handler = async (event) => {
   try {
-    const parsed = safeJsonParse(event.body || "");
-    if (!parsed.ok || !parsed.value) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({ ok: false, error: "invalid_json" }),
-      };
+    if (event.httpMethod && event.httpMethod !== "POST") {
+      return json(405, { ok: false, error: "method_not_allowed" });
     }
 
-    const payload = parsed.value;
+    const body = await readBody(event);
+    const record = buildIncidentRecord(body);
 
-    const contactId = pickFirst(payload, ["contact_id"]);
-    if (!contactId) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({ ok: false, error: "missing_contact_id" }),
-      };
-    }
-
-    const reconnectUrl = process.env.ACX_RECONNECT_URL;
-if (!reconnectUrl) {
-  return json(500, { ok: false, error: "Missing env var: ACX_RECONNECT_URL" });
-}
-    const grantStatus = normalizeKey(
-      pickFirst(payload, ["acx_grant_status"]) || "unknown"
-    );
-    const failStreak = Number(
-      pickFirst(payload, ["acx_fail_streak"]) || 0
-    );
-    const repairLastSent = pickFirst(payload, ["acx_repair_last_sent"]);
-    const notifyEmail =
-      pickFirst(payload, ["acx_client_notify_email"]) ||
-      pickFirst(payload, ["contact_email"]);
-    const companyName =
-      pickFirst(payload, ["acx_company_name"]) || "your system";
-
-    if (!notifyEmail) {
-      console.log("ACX_SENTINEL_REPAIR_SKIP", {
-        contact_id: contactId,
-        reason: "no_notify_email",
+    if (!record.notify_email) {
+      return json(400, {
+        ok: false,
+        error: "missing_recipient_email",
       });
-
-      return {
-        statusCode: 200,
-        body: JSON.stringify({ ok: true, skipped: "no_notify_email" }),
-      };
     }
 
-    const shouldSend =
-      sentinelStatus === "critical" &&
-      (grantStatus === "disconnected" || failStreak >= 3) &&
-      daysSince(repairLastSent) >= 1;
+    await storeIncident(record);
 
-    if (!shouldSend) {
-      console.log("ACX_SENTINEL_REPAIR_SKIP", {
-        contact_id: contactId,
-        reason: "conditions_not_met",
-        sentinel_status: sentinelStatus,
-        grant_status: grantStatus,
-        fail_streak: failStreak,
-        days_since_last_sent: daysSince(repairLastSent),
-      });
-
-      return {
-        statusCode: 200,
-        body: JSON.stringify({
-          ok: true,
-          skipped: "conditions_not_met",
-          sentinel_status: sentinelStatus,
-          grant_status: grantStatus,
-          fail_streak: failStreak,
-        }),
-      };
-    }
-
-    const connections = parseConnectionsFromPayload(payload);
-    const incidentId = createIncidentId();
-    const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
-
-    const incidentRecord = {
-      incident_id: incidentId,
-      contact_id: contactId,
-      company_name: companyName,
-      notify_email: notifyEmail,
-      sentinel_status: sentinelStatus,
-      grant_status: grantStatus,
-      fail_streak: failStreak,
-      issued_at: new Date().toISOString(),
-      expires_at: expiresAt,
-      resolved: false,
-      connections,
-    };
-
-    await writeIncident(incidentId, incidentRecord);
-
-    const reconnectUrl =
-      reconnectBaseUrl.replace(/\/$/, "") + `?i=${encodeURIComponent(incidentId)}`;
-
-    const subject = "Action Required: Inbox Connection Interrupted";
-    const html = renderReconnectEmail({
-      reconnectUrl,
-      companyName,
-      connections,
-    });
+    const reconnectUrl = buildReconnectUrl(record);
+    const subject = "Action needed: reconnect your ACX protected inboxes";
+    const html = buildEmailHtml({ record, reconnectUrl });
+    const text = buildEmailText({ record, reconnectUrl });
 
     await sendMailgunEmail({
-      to: notifyEmail,
+      to: record.notify_email,
       subject,
       html,
+      text,
     });
 
-    await ghlUpdateContact(contactId, {
-      customFields: [
-        { key: "acx_repair_last_sent", field_value: todayDateString() },
-        { key: "acx_repair_status", field_value: "sent" },
-      ],
-    });
+    const ghlUpdate = await updateGhlContactIfConfigured({ record });
 
     console.log("ACX_SENTINEL_REPAIR_SENT", {
-      contact_id: contactId,
-      sent_to: notifyEmail,
-      sentinel_status: sentinelStatus,
-      grant_status: grantStatus,
-      fail_streak: failStreak,
-      incident_id: incidentId,
-      connection_count: connections.length,
+      contact_id: record.contact_id,
+      sent_to: record.notify_email,
+      sentinel_status: record.sentinel_status,
+      grant_status: record.grant_status,
+      fail_streak: record.fail_streak,
+      incident_id: record.incident_id,
+      inbox_count: Array.isArray(record.inboxes) ? record.inboxes.length : 0,
+      ghl_update: ghlUpdate,
     });
 
-    return {
-      statusCode: 200,
-      body: JSON.stringify({
-        ok: true,
-        sent_to: notifyEmail,
-        incident_id: incidentId,
-      }),
-    };
+    return json(200, {
+      ok: true,
+      sent: true,
+      incident_id: record.incident_id,
+      sent_to: record.notify_email,
+      reconnect_url: reconnectUrl,
+      contact_id: record.contact_id,
+      sentinel_status: record.sentinel_status,
+      grant_status: record.grant_status,
+      fail_streak: record.fail_streak,
+      inbox_count: Array.isArray(record.inboxes) ? record.inboxes.length : 0,
+    });
   } catch (err) {
-    console.error("ACX_SENTINEL_REPAIR_FATAL", {
-      error: err?.message || "unknown_error",
-      details: err?.details || null,
-      status: err?.status || null,
+    console.error("ACX_SENTINEL_REPAIR_ERROR", {
+      message: err?.message,
+      stack: err?.stack,
     });
 
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
-        ok: false,
-        error: err?.message || "unknown_error",
-      }),
-    };
+    return json(500, {
+      ok: false,
+      error: err?.message || "internal_error",
+    });
   }
 };
