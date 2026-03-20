@@ -3,18 +3,22 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Reconnect Inbox • Automated Clarity</title>
+  <title>Reconnect Inboxes • Automated Clarity</title>
   <meta name="robots" content="noindex,nofollow" />
   <style>
     :root{
       --bg:#f4f6f8;
       --card:#ffffff;
-      --text:#0f172a;
-      --muted:#475569;
-      --line:#e5e7eb;
-      --accent:#f59e0b;
-      --accent-bg:#fff7ed;
-      --accent-border:#fdba74;
+      --text:#111827;
+      --muted:#4b5563;
+      --line:#e7e7e7;
+      --warn:#f59e0b;
+      --warn-bg:#fef3c7;
+      --warn-fg:#92400e;
+      --ok-bg:#dcfce7;
+      --ok-fg:#166534;
+      --danger-bg:#fee2e2;
+      --danger-fg:#991b1b;
       --footer:#0b1220;
     }
     *{box-sizing:border-box}
@@ -24,96 +28,67 @@
       color:var(--text);
       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
     }
-    .wrap{
-      max-width:640px;
-      margin:0 auto;
-      padding:32px 14px;
-    }
+    .wrap{max-width:760px;margin:0 auto;padding:28px 14px}
     .card{
       background:var(--card);
-      border-radius:16px;
+      border-radius:14px;
       overflow:hidden;
       box-shadow:0 6px 20px rgba(0,0,0,.06);
     }
-    .topbar{
-      height:6px;
-      background:var(--accent);
-    }
-    .body{
-      padding:28px;
-    }
+    .topbar{height:6px;background:var(--warn)}
+    .body{padding:26px}
     .pill{
-      display:inline-block;
-      padding:6px 10px;
-      border-radius:999px;
-      background:#fef3c7;
-      color:#92400e;
-      font-size:12px;
-      font-weight:700;
+      display:inline-block;padding:6px 10px;border-radius:999px;
+      background:var(--warn-bg);color:var(--warn-fg);font-size:12px;font-weight:700;
       margin-bottom:10px;
     }
-    h1{
-      margin:0 0 14px 0;
-      font-size:30px;
-      line-height:1.1;
-      letter-spacing:-0.03em;
-    }
-    p{
-      margin:0 0 16px 0;
-      color:var(--muted);
-      font-size:18px;
-      line-height:1.6;
-    }
-    .box{
+    h1{margin:0 0 14px 0;font-size:28px;line-height:1.1;letter-spacing:-.02em}
+    p{margin:0 0 16px 0;color:var(--muted);font-size:16px;line-height:1.65}
+    .panel{
       border:1px solid var(--line);
       border-radius:12px;
       padding:18px;
       margin:18px 0;
     }
-    .box strong{
-      color:var(--text);
+    .table{
+      width:100%;
+      border-collapse:collapse;
+      margin-top:8px;
     }
-    .cta{
+    .table th,.table td{
+      text-align:left;
+      padding:12px 8px;
+      border-bottom:1px solid #eef0f3;
+      vertical-align:middle;
+      font-size:14px;
+    }
+    .table th{color:#6b7280;font-weight:700}
+    .status{
+      display:inline-block;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:700;
+    }
+    .status.ok{background:var(--ok-bg);color:var(--ok-fg)}
+    .status.bad{background:var(--danger-bg);color:var(--danger-fg)}
+    .btn{
       display:inline-block;
-      padding:14px 22px;
-      border-radius:10px;
-      background:var(--accent-bg);
-      color:#9a3412;
-      border:1px solid var(--accent-border);
+      padding:10px 16px;
+      border-radius:8px;
       text-decoration:none;
       font-weight:700;
-      font-size:16px;
+      background:#fff7ed;
+      color:#9a3412;
+      border:1px solid #fdba74;
+      font-size:14px;
     }
-    .small{
-      font-size:13px;
-      color:#6b7280;
-      line-height:1.6;
-    }
+    .muted{color:#6b7280;font-size:13px}
     .footer{
-      margin-top:14px;
-      background:var(--footer);
-      border-radius:10px;
-      color:#9ca3af;
-      padding:14px 16px;
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap:16px;
-      flex-wrap:wrap;
+      margin-top:14px;background:var(--footer);border-radius:10px;color:#9ca3af;
+      padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;
     }
-    .brand{
-      display:flex;
-      align-items:center;
-      gap:12px;
-      color:#fff;
-      font-weight:700;
+    .footer img{display:block;width:140px;height:auto}
+    .state{
+      padding:24px;border:1px dashed var(--line);border-radius:12px;background:#fafafa;color:#6b7280
     }
-    .brand img{
-      display:block;
-      width:140px;
-      height:auto;
-      border:0;
-    }
+    .hidden{display:none}
   </style>
 </head>
 <body>
@@ -121,42 +96,47 @@
     <div class="card">
       <div class="topbar"></div>
       <div class="body">
-        <div class="pill">Action Required</div>
-        <h1>Reconnect your inbox</h1>
-
-        <p>
-          We detected that one of your connected inboxes is no longer syncing with your ACX system.
+        <div class="pill">Recovery Access</div>
+        <h1>Reconnect affected inboxes</h1>
+        <p id="intro">
+          We detected a connection interruption affecting your ACX monitoring layer.
+          Review the affected inboxes below and reconnect any that require attention.
         </p>
 
-        <p>
-          This usually happens after a password change, security update, or mailbox reauthorization requirement.
-        </p>
-
-        <div class="box">
-          <div style="margin-bottom:10px;"><strong>Status:</strong> Connection interrupted</div>
-          <div style="margin-bottom:10px;"><strong>Impact:</strong> New email activity may not be monitored until reconnection is completed</div>
-          <div><strong>Action:</strong> Reconnect the affected inbox below to restore normal operation</div>
+        <div id="loading" class="state">Loading incident details…</div>
+        <div id="error" class="state hidden"></div>
+        <div id="resolved" class="state hidden">
+          This incident has already been resolved. Monitoring has resumed.
         </div>
 
-        <p style="font-weight:700;color:#111827;">
-          Once reconnected, monitoring will resume automatically.
-        </p>
+        <div id="content" class="hidden">
+          <div class="panel">
+            <div style="margin-bottom:10px;"><strong id="companyName">Your system</strong></div>
+            <div class="muted">Only the inboxes tied to this incident are shown here.</div>
 
-        <div class="box">
-          <div style="font-weight:700;margin-bottom:10px;">Reconnect control</div>
-          <p style="margin:0 0 14px 0;font-size:16px;">
-            Select the button below to begin secure inbox reconnection.
-          </p>
-          <a id="reconnectBtn" class="cta" href="/.netlify/functions/auth-login">
-            Reconnect inbox
-          </a>
-          <div class="small" style="margin-top:12px;">
-            This restores full monitoring automatically.
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Inbox</th>
+                  <th>Status</th>
+                  <th>Provider</th>
+                  <th style="text-align:right;">Action</th>
+                </tr>
+              </thead>
+              <tbody id="connectionsBody"></tbody>
+            </table>
+          </div>
+
+          <div class="panel">
+            <div style="font-weight:700; margin-bottom:10px;">What happens next</div>
+            <p style="margin-bottom:0;">
+              Once a disconnected inbox is reconnected, monitoring resumes automatically. If all affected inboxes are restored, this incident link becomes inactive.
+            </p>
           </div>
         </div>
 
         <div class="footer">
-          <div class="brand">
+          <div>
             <img src="https://notify.automatedclarity.com/assets/acx-logo-dark.png?v=5" alt="Automated Clarity" />
           </div>
           <div>Automated Clarity™ Monitoring</div>
@@ -166,13 +146,92 @@
   </div>
 
   <script>
-    (function () {
+    (async function () {
       const params = new URLSearchParams(window.location.search);
-      const contactId = params.get("cid");
-      const btn = document.getElementById("reconnectBtn");
+      const incidentId = params.get("i");
 
-      if (contactId) {
-        btn.href = "/.netlify/functions/auth-login?cid=" + encodeURIComponent(contactId);
+      const loading = document.getElementById("loading");
+      const error = document.getElementById("error");
+      const resolved = document.getElementById("resolved");
+      const content = document.getElementById("content");
+      const companyName = document.getElementById("companyName");
+      const tbody = document.getElementById("connectionsBody");
+
+      function showError(msg) {
+        loading.classList.add("hidden");
+        content.classList.add("hidden");
+        resolved.classList.add("hidden");
+        error.classList.remove("hidden");
+        error.textContent = msg;
+      }
+
+      if (!incidentId) {
+        showError("This reconnect link is invalid.");
+        return;
+      }
+
+      try {
+        const res = await fetch(`/.netlify/functions/acx-reconnect-incident?i=${encodeURIComponent(incidentId)}`, {
+          cache: "no-store"
+        });
+
+        const data = await res.json();
+
+        if (!res.ok || !data.ok) {
+          if (data && data.error === "incident_expired") {
+            showError("This reconnect link has expired. Please use the latest alert email.");
+            return;
+          }
+          if (data && data.error === "incident_not_found") {
+            showError("This reconnect link is no longer available.");
+            return;
+          }
+          showError("Unable to load reconnect details.");
+          return;
+        }
+
+        loading.classList.add("hidden");
+
+        if (data.resolved) {
+          resolved.classList.remove("hidden");
+          return;
+        }
+
+        companyName.textContent = data.company_name || "Your system";
+
+        const connections = Array.isArray(data.connections) ? data.connections : [];
+        tbody.innerHTML = "";
+
+        if (!connections.length) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td colspan="4" class="muted" style="padding:14px 8px;">No affected inbox details were included for this incident.</td>`;
+          tbody.appendChild(tr);
+        } else {
+          connections.forEach((conn) => {
+            const isDisconnected = String(conn.status || "").toLowerCase() === "disconnected";
+            const tr = document.createElement("tr");
+
+            const statusClass = isDisconnected ? "bad" : "ok";
+            const statusText = isDisconnected ? "Disconnected" : "Connected";
+            const providerText = conn.provider || "—";
+            const actionHtml = isDisconnected
+              ? `<a class="btn" href="/.netlify/functions/acx-reconnect-start?i=${encodeURIComponent(data.incident_id)}&c=${encodeURIComponent(conn.id)}">Reconnect</a>`
+              : `<span class="muted">No action needed</span>`;
+
+            tr.innerHTML = `
+              <td>${conn.email || "Unknown inbox"}</td>
+              <td><span class="status ${statusClass}">${statusText}</span></td>
+              <td>${providerText}</td>
+              <td style="text-align:right;">${actionHtml}</td>
+            `;
+
+            tbody.appendChild(tr);
+          });
+        }
+
+        content.classList.remove("hidden");
+      } catch (e) {
+        showError("Unable to load reconnect details.");
       }
     })();
   </script>
