@@ -361,10 +361,10 @@ exports.handler = async (event) => {
       };
     }
 
-    const reconnectBaseUrl = getEnv("ACX_RECONNECT_BASE_URL", true);
-    const sentinelStatus = normalizeKey(
-      pickFirst(payload, ["acx_sentinel_status"]) || "unknown"
-    );
+    const reconnectUrl = process.env.ACX_RECONNECT_URL;
+if (!reconnectUrl) {
+  return json(500, { ok: false, error: "Missing env var: ACX_RECONNECT_URL" });
+}
     const grantStatus = normalizeKey(
       pickFirst(payload, ["acx_grant_status"]) || "unknown"
     );
