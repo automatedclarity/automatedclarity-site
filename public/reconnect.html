@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Reconnect Inbox • Automated Clarity</title>
+  <meta name="robots" content="noindex,nofollow" />
+  <style>
+    :root{
+      --bg:#f4f6f8;
+      --card:#ffffff;
+      --text:#0f172a;
+      --muted:#475569;
+      --line:#e5e7eb;
+      --accent:#f59e0b;
+      --accent-bg:#fff7ed;
+      --accent-border:#fdba74;
+      --footer:#0b1220;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      background:var(--bg);
+      color:var(--text);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    }
+    .wrap{
+      max-width:640px;
+      margin:0 auto;
+      padding:32px 14px;
+    }
+    .card{
+      background:var(--card);
+      border-radius:16px;
+      overflow:hidden;
+      box-shadow:0 6px 20px rgba(0,0,0,.06);
+    }
+    .topbar{
+      height:6px;
+      background:var(--accent);
+    }
+    .body{
+      padding:28px;
+    }
+    .pill{
+      display:inline-block;
+      padding:6px 10px;
+      border-radius:999px;
+      background:#fef3c7;
+      color:#92400e;
+      font-size:12px;
+      font-weight:700;
+      margin-bottom:10px;
+    }
+    h1{
+      margin:0 0 14px 0;
+      font-size:30px;
+      line-height:1.1;
+      letter-spacing:-0.03em;
+    }
+    p{
+      margin:0 0 16px 0;
+      color:var(--muted);
+      font-size:18px;
+      line-height:1.6;
+    }
+    .box{
+      border:1px solid var(--line);
+      border-radius:12px;
+      padding:18px;
+      margin:18px 0;
+    }
+    .box strong{
+      color:var(--text);
+    }
+    .cta{
+      display:inline-block;
+      padding:14px 22px;
+      border-radius:10px;
+      background:var(--accent-bg);
+      color:#9a3412;
+      border:1px solid var(--accent-border);
+      text-decoration:none;
+      font-weight:700;
+      font-size:16px;
+    }
+    .small{
+      font-size:13px;
+      color:#6b7280;
+      line-height:1.6;
+    }
+    .footer{
+      margin-top:14px;
+      background:var(--footer);
+      border-radius:10px;
+      color:#9ca3af;
+      padding:14px 16px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:16px;
+      flex-wrap:wrap;
+    }
+    .brand{
+      display:flex;
+      align-items:center;
+      gap:12px;
+      color:#fff;
+      font-weight:700;
+    }
+    .brand img{
+      display:block;
+      width:140px;
+      height:auto;
+      border:0;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="topbar"></div>
+      <div class="body">
+        <div class="pill">Action Required</div>
+        <h1>Reconnect your inbox</h1>
+
+        <p>
+          We detected that one of your connected inboxes is no longer syncing with your ACX system.
+        </p>
+
+        <p>
+          This usually happens after a password change, security update, or mailbox reauthorization requirement.
+        </p>
+
+        <div class="box">
+          <div style="margin-bottom:10px;"><strong>Status:</strong> Connection interrupted</div>
+          <div style="margin-bottom:10px;"><strong>Impact:</strong> New email activity may not be monitored until reconnection is completed</div>
+          <div><strong>Action:</strong> Reconnect the affected inbox below to restore normal operation</div>
+        </div>
+
+        <p style="font-weight:700;color:#111827;">
+          Once reconnected, monitoring will resume automatically.
+        </p>
+
+        <div class="box">
+          <div style="font-weight:700;margin-bottom:10px;">Reconnect control</div>
+          <p style="margin:0 0 14px 0;font-size:16px;">
+            Select the button below to begin secure inbox reconnection.
+          </p>
+          <a id="reconnectBtn" class="cta" href="/.netlify/functions/auth-login">
+            Reconnect inbox
+          </a>
+          <div class="small" style="margin-top:12px;">
+            This restores full monitoring automatically.
+          </div>
+        </div>
+
+        <div class="footer">
+          <div class="brand">
+            <img src="https://notify.automatedclarity.com/assets/acx-logo-dark.png?v=5" alt="Automated Clarity" />
+          </div>
+          <div>Automated Clarity™ Monitoring</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const params = new URLSearchParams(window.location.search);
+      const contactId = params.get("cid");
+      const btn = document.getElementById("reconnectBtn");
+
+      if (contactId) {
+        btn.href = "/.netlify/functions/auth-login?cid=" + encodeURIComponent(contactId);
+      }
+    })();
+  </script>
+</body>
+</html>
