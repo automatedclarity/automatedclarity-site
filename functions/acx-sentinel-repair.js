@@ -14,6 +14,8 @@
 // - MAILGUN_API_KEY
 // - MAILGUN_DOMAIN
 // - ACX_RECONNECT_URL
+// - NETLIFY_SITE_ID
+// - NETLIFY_BLOBS_TOKEN
 //
 // Optional env:
 // - ACX_BLOBS_STORE                (default: "acx-sentinel")
@@ -38,12 +40,6 @@ function json(statusCode, body) {
     headers: JSON_HEADERS,
     body: JSON.stringify(body),
   };
-}
-
-function asArray(value) {
-  if (!value) return [];
-  if (Array.isArray(value)) return value;
-  return [value];
 }
 
 function firstNonEmpty(...values) {
@@ -239,8 +235,25 @@ function buildIncidentRecord(body) {
 }
 
 async function storeIncident(record) {
-  const store = getStore(BLOBS_STORE_NAME);
+  const siteID = firstNonEmpty(process.env.NETLIFY_SITE_ID);
+  const token = firstNonEmpty(process.env.NETLIFY_BLOBS_TOKEN);
+
+  if (!siteID) {
+    throw new Error("Missing env var: NETLIFY_SITE_ID");
+  }
+
+  if (!token) {
+    throw new Error("Missing env var: NETLIFY_BLOBS_TOKEN");
+  }
+
+  const store = getStore({
+    name: BLOBS_STORE_NAME,
+    siteID,
+    token,
+  });
+
   const key = `sentinel/incidents/${record.incident_id}.json`;
+
   await store.set(key, JSON.stringify(record), {
     metadata: {
       type: "sentinel_reconnect_incident",
@@ -251,6 +264,7 @@ async function storeIncident(record) {
       status: record.status || "open",
     },
   });
+
   return key;
 }
 
