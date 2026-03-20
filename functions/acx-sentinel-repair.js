@@ -3,11 +3,23 @@
 // Netlify is the brain:
 // - receives current state from GHL webhook
 // - decides whether to send
+// - creates a tokenized reconnect incident
 // - sends premium reconnect email via Mailgun
 // - updates GHL fields only after successful send
 
+let getStore = null;
+try {
+  ({ getStore } = require("@netlify/blobs"));
+} catch (_) {
+  getStore = null;
+}
+
+const crypto = require("crypto");
+
 const DEFAULT_API_BASE = "https://services.leadconnectorhq.com";
 const DEFAULT_API_VERSION = "2021-07-28";
+const LOGO_URL = "https://notify.automatedclarity.com/assets/acx-logo-dark.png?v=5";
+const FOOTER_LABEL = "Automated Clarity™ Monitoring";
 
 // -------------------- helpers --------------------
 function getEnv(name, required = false) {
@@ -86,18 +98,6 @@ function pickFirst(obj, keys) {
   return undefined;
 }
 
-async function ghlUpdateContact(contactId, body) {
-  const base = getEnv("GHL_API_BASE") || DEFAULT_API_BASE;
-  const token = getEnv("GHL_SENTINEL_TOKEN", true);
-
-  return httpJson(
-    "PUT",
-    `${base}/contacts/${contactId}`,
-    buildHeaders(token),
-    body
-  );
-}
-
 function daysSince(dateStr) {
   if (!dateStr) return 9999;
   const d = new Date(dateStr);
@@ -109,9 +109,72 @@ function todayDateString() {
   return new Date().toISOString().slice(0, 10);
 }
 
-// -------------------- email styling --------------------
-const LOGO_URL = "https://notify.automatedclarity.com/assets/acx-logo-dark.png?v=5";
-const FOOTER_LABEL = "Automated Clarity™ Monitoring";
+function createIncidentId() {
+  return crypto.randomBytes(24).toString("hex");
+}
+
+function parseConnectionsFromPayload(payload) {
+  // Preferred: direct array
+  if (Array.isArray(payload?.connections)) {
+    return payload.connections
+      .map((c, idx) => ({
+        id: String(c.id || `conn_${idx + 1}`),
+        email: String(c.email || "").trim(),
+        provider: String(c.provider || "").trim(),
+        status: normalizeKey(c.status || "disconnected"),
+        grant_status: normalizeKey(c.grant_status || c.status || "disconnected"),
+      }))
+      .filter((c) => c.email);
+  }
+
+  // Preferred: JSON string from GHL webhook custom data
+  const rawJson = pickFirst(payload, ["acx_connections_json", "connections_json"]);
+  if (rawJson) {
+    const parsed = safeJsonParse(rawJson);
+    if (parsed.ok && Array.isArray(parsed.value)) {
+      return parsed.value
+        .map((c, idx) => ({
+          id: String(c.id || `conn_${idx + 1}`),
+          email: String(c.email || "").trim(),
+          provider: String(c.provider || "").trim(),
+          status: normalizeKey(c.status || "disconnected"),
+          grant_status: normalizeKey(c.grant_status || c.status || "disconnected"),
+        }))
+        .filter((c) => c.email);
+    }
+  }
+
+  // Fallback single affected inbox if passed
+  const singleEmail = pickFirst(payload, [
+    "affected_inbox_email",
+    "acx_affected_inbox_email",
+    "inbox_email",
+  ]);
+
+  if (singleEmail) {
+    return [{
+      id: "conn_1",
+      email: singleEmail,
+      provider: String(pickFirst(payload, ["provider", "acx_provider"]) || "").trim(),
+      status: "disconnected",
+      grant_status: "disconnected",
+    }];
+  }
+
+  // Final fallback: use notify email as visible placeholder
+  const notifyEmail = pickFirst(payload, ["acx_client_notify_email", "contact_email"]);
+  if (notifyEmail) {
+    return [{
+      id: "conn_1",
+      email: notifyEmail,
+      provider: "",
+      status: "disconnected",
+      grant_status: "disconnected",
+    }];
+  }
+
+  return [];
+}
 
 function footerBarHtml() {
   return `
@@ -132,9 +195,34 @@ function footerBarHtml() {
   `.trim();
 }
 
-function renderReconnectEmail({ reconnectUrl, companyName }) {
-  const safeCompany = companyName || "your system";
+function renderReconnectEmail({ reconnectUrl, companyName, connections }) {
   const safeReconnectUrl = escapeHtml(reconnectUrl || "");
+  const safeCompany = escapeHtml(companyName || "your system");
+  const affectedCount = connections.filter((c) => normalizeKey(c.status) === "disconnected").length;
+  const affectedLabel = affectedCount === 1 ? "1 inbox requires attention" : `${affectedCount} inboxes require attention`;
+
+  const rowsHtml = connections
+    .slice(0, 4)
+    .map((c) => {
+      const isDown = normalizeKey(c.status) === "disconnected";
+      const pillBg = isDown ? "#fee2e2" : "#dcfce7";
+      const pillColor = isDown ? "#991b1b" : "#166534";
+      const pillText = isDown ? "Disconnected" : "Connected";
+
+      return `
+        <tr>
+          <td style="padding:10px 0; border-bottom:1px solid #eef0f3; color:#111827; font-size:14px;">
+            ${escapeHtml(c.email)}
+          </td>
+          <td style="padding:10px 0; border-bottom:1px solid #eef0f3; text-align:right;">
+            <span style="display:inline-block; padding:5px 9px; border-radius:999px; background:${pillBg}; color:${pillColor}; font-size:12px; font-weight:700;">
+              ${pillText}
+            </span>
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
 
   return `
     <html>
@@ -145,7 +233,6 @@ function renderReconnectEmail({ reconnectUrl, companyName }) {
       <body style="margin:0; padding:0; background:#f4f6f8; font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;">
         <div style="padding:24px 12px;">
           <div style="max-width:560px; margin:0 auto; background:#ffffff; border-radius:14px; box-shadow:0 6px 20px rgba(0,0,0,.06); overflow:hidden;">
-
             <div style="height:6px; background:#f59e0b;"></div>
 
             <div style="padding:26px;">
@@ -160,7 +247,7 @@ function renderReconnectEmail({ reconnectUrl, companyName }) {
               </h2>
 
               <p style="margin:0 0 16px 0; color:#555;">
-                We detected that one of your connected inboxes is no longer syncing with ${escapeHtml(safeCompany)}.
+                We detected a connection interruption affecting ${safeCompany}.
               </p>
 
               <p style="margin:0 0 18px 0; color:#555;">
@@ -168,34 +255,36 @@ function renderReconnectEmail({ reconnectUrl, companyName }) {
               </p>
 
               <div style="border:1px solid #e7e7e7; border-radius:10px; padding:16px; margin-bottom:18px;">
-                <div style="margin:0 0 10px 0;"><strong>Status:</strong> Connection interrupted</div>
-                <div style="margin:0 0 10px 0;"><strong>Impact:</strong> New email activity may not be monitored until the inbox is reconnected</div>
-                <div style="margin:0;"><strong>Action:</strong> Reconnect the inbox below to restore full operation</div>
+                <div style="margin:0 0 10px 0;"><strong>Status:</strong> ${escapeHtml(affectedLabel)}</div>
+                <div style="margin:0 0 12px 0;"><strong>Impact:</strong> New email activity may not be fully monitored until disconnected inboxes are restored</div>
+
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+                  ${rowsHtml}
+                </table>
               </div>
 
               <p style="margin:18px 0 14px 0; color:#111; font-weight:700;">
-                Once reconnected, monitoring will resume automatically.
+                Review the affected inboxes and reconnect the ones that require attention.
               </p>
 
               <div style="border:1px solid #e7e7e7; border-radius:10px; padding:18px; margin-top:10px;">
                 <div style="font-weight:700; margin-bottom:10px;">Reconnect control</div>
                 <div style="color:#444; margin-bottom:14px;">
-                  Reconnect the affected inbox to restore normal system operation.
+                  Open the secure recovery page below to review affected inboxes and restore monitoring.
                 </div>
 
                 <a href="${safeReconnectUrl}"
                    style="display:inline-block; padding:12px 22px; background:#fff7ed; color:#9a3412; border-radius:8px;
                           text-decoration:none; font-weight:700; border:1px solid #fdba74;">
-                  Reconnect inbox
+                  Review and reconnect inboxes
                 </a>
 
                 <div style="margin-top:10px; color:#777; font-size:12px;">
-                  This restores full monitoring automatically.
+                  This link is for this incident only and will expire automatically.
                 </div>
               </div>
 
               ${footerBarHtml()}
-
             </div>
           </div>
         </div>
@@ -235,6 +324,22 @@ async function sendMailgunEmail({ to, subject, html }) {
   return text;
 }
 
+function getBlobStore() {
+  if (!getStore) throw new Error("Netlify Blobs is not available");
+  return getStore({
+    name: "acx-sentinel",
+    siteID: process.env.NETLIFY_SITE_ID,
+    token: process.env.NETLIFY_BLOBS_TOKEN,
+  });
+}
+
+async function writeIncident(incidentId, record) {
+  const store = getBlobStore();
+  const key = `reconnect/incidents/${incidentId}.json`;
+  await store.setJSON(key, record);
+  return key;
+}
+
 // -------------------- handler --------------------
 exports.handler = async (event) => {
   try {
@@ -256,8 +361,7 @@ exports.handler = async (event) => {
       };
     }
 
-    const reconnectUrl = getEnv("ACX_RECONNECT_URL", true);
-
+    const reconnectBaseUrl = getEnv("ACX_RECONNECT_BASE_URL", true);
     const sentinelStatus = normalizeKey(
       pickFirst(payload, ["acx_sentinel_status"]) || "unknown"
     );
@@ -313,10 +417,34 @@ exports.handler = async (event) => {
       };
     }
 
+    const connections = parseConnectionsFromPayload(payload);
+    const incidentId = createIncidentId();
+    const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+
+    const incidentRecord = {
+      incident_id: incidentId,
+      contact_id: contactId,
+      company_name: companyName,
+      notify_email: notifyEmail,
+      sentinel_status: sentinelStatus,
+      grant_status: grantStatus,
+      fail_streak: failStreak,
+      issued_at: new Date().toISOString(),
+      expires_at: expiresAt,
+      resolved: false,
+      connections,
+    };
+
+    await writeIncident(incidentId, incidentRecord);
+
+    const reconnectUrl =
+      reconnectBaseUrl.replace(/\/$/, "") + `?i=${encodeURIComponent(incidentId)}`;
+
     const subject = "Action Required: Inbox Connection Interrupted";
     const html = renderReconnectEmail({
       reconnectUrl,
       companyName,
+      connections,
     });
 
     await sendMailgunEmail({
@@ -338,6 +466,8 @@ exports.handler = async (event) => {
       sentinel_status: sentinelStatus,
       grant_status: grantStatus,
       fail_streak: failStreak,
+      incident_id: incidentId,
+      connection_count: connections.length,
     });
 
     return {
@@ -345,6 +475,7 @@ exports.handler = async (event) => {
       body: JSON.stringify({
         ok: true,
         sent_to: notifyEmail,
+        incident_id: incidentId,
       }),
     };
   } catch (err) {
