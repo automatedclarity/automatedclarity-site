@@ -33,3 +33,9 @@
 
 [functions."acx-sentinel-watchdog"]
   schedule = "*/5 * * * *"
+
+[[redirects]]
+  from = "/reconnect"
+  to = "/reconnect.html"
+  status = 200
+  force = true
