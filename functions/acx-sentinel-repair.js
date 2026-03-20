@@ -1,7 +1,9 @@
 // netlify/functions/acx-sentinel-repair.js
 // ACX Sentinel Repair Loop
-// Creates an incident record, builds a signed reconnect link, sends premium Mailgun email,
-// and optionally updates the GHL contact if token + field IDs are configured.
+// - Creates an incident record in Netlify Blobs
+// - Builds an incident-specific reconnect link from ACX_RECONNECT_URL
+// - Sends ACX house-style repair email via Mailgun
+// - Optionally updates GHL contact custom fields
 //
 // Locked assumptions:
 // - Netlify is the brain
@@ -18,9 +20,9 @@
 // - NETLIFY_BLOBS_TOKEN
 //
 // Optional env:
-// - ACX_BLOBS_STORE                (default: "acx-sentinel")
-// - GHL_SENTINEL_TOKEN             (optional, only for contact update)
-// - GHL_LOCATION_ID                (optional fallback)
+// - ACX_BLOBS_STORE (default: "acx-sentinel")
+// - GHL_SENTINEL_TOKEN
+// - GHL_LOCATION_ID
 // - ACX_SENTINEL_LAST_INCIDENT_CF_ID
 // - ACX_SENTINEL_LAST_REPAIR_AT_CF_ID
 // - ACX_SENTINEL_LAST_REPAIR_STATUS_CF_ID
@@ -29,10 +31,10 @@ const crypto = require("crypto");
 const querystring = require("querystring");
 const { getStore } = require("@netlify/blobs");
 
-const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
-const FROM_EMAIL = "no-reply@mg.automatedclarity.com";
-const BLOBS_STORE_NAME = process.env.ACX_BLOBS_STORE || "acx-sentinel";
+const JSON_HEADERS = { "Content-Type": "application/json" };
 const GHL_BASE = "https://services.leadconnectorhq.com";
+const BLOBS_STORE_NAME = process.env.ACX_BLOBS_STORE || "acx-sentinel";
+const FROM_EMAIL = "Automated Clarity <no-reply@mg.automatedclarity.com>";
 
 function json(statusCode, body) {
   return {
@@ -40,6 +42,46 @@ function json(statusCode, body) {
     headers: JSON_HEADERS,
     body: JSON.stringify(body),
   };
+}
+
+function safeTrunc(s, n) {
+  s = String(s || "");
+  return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+function base64(s) {
+  return Buffer.from(String(s), "utf8").toString("base64");
+}
+
+function escapeHtml(str) {
+  return String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function parseMaybeJson(value, fallback) {
+  if (!value) return fallback;
+  if (typeof value === "object") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function parseBody(raw) {
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const params = new URLSearchParams(raw);
+    const out = {};
+    for (const [k, v] of params.entries()) out[k] = v;
+    return out;
+  }
 }
 
 function firstNonEmpty(...values) {
@@ -60,14 +102,6 @@ function normalizeEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : "";
 }
 
-function escapeHtml(input) {
-  return String(input || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
 function maskEmail(email) {
   const clean = normalizeEmail(email);
   if (!clean) return "";
@@ -77,36 +111,34 @@ function maskEmail(email) {
   return `${local.slice(0, 2)}***@${domain}`;
 }
 
-function parseMaybeJson(value, fallback) {
-  if (value == null || value === "") return fallback;
-  if (typeof value === "object") return value;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return fallback;
-  }
+function severityColorFromStatus(status) {
+  const s = String(status || "").toLowerCase().trim();
+  if (s === "critical") return "#dc2626";
+  if (s === "warning") return "#f59e0b";
+  return "#2563eb";
 }
 
-async function readBody(event) {
-  const contentType = String(
-    event.headers["content-type"] || event.headers["Content-Type"] || ""
-  ).toLowerCase();
+const LOGO_URL = "https://notify.automatedclarity.com/assets/acx-logo-dark.png?v=5";
+const FOOTER_LABEL = "Automated Clarity™ Monitoring";
 
-  const raw = event.body || "";
-  if (!raw) return {};
-
-  if (contentType.includes("application/json")) {
-    return parseMaybeJson(raw, {});
-  }
-
-  if (
-    contentType.includes("application/x-www-form-urlencoded") ||
-    contentType.includes("multipart/form-data")
-  ) {
-    return querystring.parse(raw);
-  }
-
-  return parseMaybeJson(raw, {});
+function footerBarHtml() {
+  return `
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0"
+      style="margin-top:14px; border-collapse:collapse; background:#0b1220; border-radius:10px;">
+      <tr>
+        <td style="padding:14px 16px; vertical-align:middle;">
+          <img src="${escapeHtml(LOGO_URL)}"
+               alt="Automated Clarity"
+               width="140"
+               style="display:block; border:0; outline:none; text-decoration:none; height:auto;"
+          />
+        </td>
+        <td style="padding:14px 16px; vertical-align:middle; text-align:right; color:#9ca3af; font-size:12px; letter-spacing:.2px;">
+          ${escapeHtml(FOOTER_LABEL)}
+        </td>
+      </tr>
+    </table>
+  `.trim();
 }
 
 function buildInboxList(body, fallbackEmail) {
@@ -116,6 +148,7 @@ function buildInboxList(body, fallbackEmail) {
     parseMaybeJson(body.monitored_inboxes, null);
 
   const rawList = Array.isArray(parsed) ? parsed : [];
+
   const normalized = rawList
     .map((item, index) => {
       if (typeof item === "string") {
@@ -136,6 +169,7 @@ function buildInboxList(body, fallbackEmail) {
           item.email || item.address || item.key || item.inbox || item.value
         );
         if (!email) return null;
+
         return {
           key: email,
           label: firstNonEmpty(item.label, item.name, item.type, `Inbox ${index + 1}`),
@@ -187,6 +221,7 @@ function buildIncidentRecord(body) {
     body.ghl_location_id,
     process.env.GHL_LOCATION_ID
   );
+
   const contactEmail = normalizeEmail(
     firstNonEmpty(
       body.sent_to,
@@ -200,7 +235,6 @@ function buildIncidentRecord(body) {
 
   const incidentId = `acx_inc_${now.getTime()}_${crypto.randomBytes(4).toString("hex")}`;
   const token = crypto.randomBytes(24).toString("hex");
-
   const sentinelStatus = firstNonEmpty(body.sentinel_status, body.status, "critical");
   const grantStatus = firstNonEmpty(body.grant_status, body.connection_status, "disconnected");
   const failStreak = toInt(body.fail_streak || body.failStreak || body.fail_count, 0);
@@ -238,13 +272,8 @@ async function storeIncident(record) {
   const siteID = firstNonEmpty(process.env.NETLIFY_SITE_ID);
   const token = firstNonEmpty(process.env.NETLIFY_BLOBS_TOKEN);
 
-  if (!siteID) {
-    throw new Error("Missing env var: NETLIFY_SITE_ID");
-  }
-
-  if (!token) {
-    throw new Error("Missing env var: NETLIFY_BLOBS_TOKEN");
-  }
+  if (!siteID) throw new Error("Missing env var: NETLIFY_SITE_ID");
+  if (!token) throw new Error("Missing env var: NETLIFY_BLOBS_TOKEN");
 
   const store = getStore({
     name: BLOBS_STORE_NAME,
@@ -270,9 +299,7 @@ async function storeIncident(record) {
 
 function buildReconnectUrl(record) {
   const reconnectBase = firstNonEmpty(process.env.ACX_RECONNECT_URL);
-  if (!reconnectBase) {
-    throw new Error("Missing env var: ACX_RECONNECT_URL");
-  }
+  if (!reconnectBase) throw new Error("Missing env var: ACX_RECONNECT_URL");
 
   const url = new URL(reconnectBase);
   url.searchParams.set("incident", record.incident_id);
@@ -280,173 +307,171 @@ function buildReconnectUrl(record) {
   return url.toString();
 }
 
-function buildInboxRows(inboxes) {
+function buildInboxStatusBlock(inboxes) {
   if (!Array.isArray(inboxes) || !inboxes.length) {
     return `
-      <tr>
-        <td style="padding:14px 16px;border-bottom:1px solid #e5e7eb;font-size:14px;color:#111827;">
-          Unable to detect inboxes from this incident.
-        </td>
-        <td style="padding:14px 16px;border-bottom:1px solid #e5e7eb;font-size:14px;color:#b91c1c;text-align:right;">
-          Attention required
-        </td>
-      </tr>
-    `;
+      <div style="border:1px solid #e7e7e7; border-radius:10px; padding:16px;">
+        <div style="font-weight:700; margin:0 0 10px 0;">Inbox status</div>
+        <div style="color:#444;">Unable to detect inboxes from this incident.</div>
+      </div>
+    `.trim();
   }
 
-  return inboxes
+  const rows = inboxes
     .map((inbox) => {
       const status = String(inbox.status || "disconnected").toLowerCase();
       const statusLabel = status === "connected" ? "Connected" : "Reconnect required";
-      const statusColor = status === "connected" ? "#166534" : "#b91c1c";
-      const statusBg = status === "connected" ? "#dcfce7" : "#fee2e2";
+      const chipBg = status === "connected" ? "#e6f4ea" : "#fde8e8";
+      const chipColor = status === "connected" ? "#256c3f" : "#b42318";
+      const email = inbox.email || inbox.key || "";
+      const label = inbox.label || "Inbox";
 
       return `
         <tr>
-          <td style="padding:14px 16px;border-bottom:1px solid #e5e7eb;">
-            <div style="font-size:14px;font-weight:600;color:#111827;">${escapeHtml(
-              inbox.label || "Inbox"
-            )}</div>
-            <div style="font-size:13px;color:#6b7280;margin-top:4px;">${escapeHtml(
-              maskEmail(inbox.email || inbox.key || "")
-            )}</div>
+          <td style="padding:12px 0; border-top:1px solid #f0f0f0; vertical-align:top;">
+            <div style="font-weight:700; color:#111;">${escapeHtml(label)}</div>
+            <div style="color:#2563eb; margin-top:4px;">${escapeHtml(maskEmail(email))}</div>
           </td>
-          <td style="padding:14px 16px;border-bottom:1px solid #e5e7eb;text-align:right;">
-            <span style="display:inline-block;padding:6px 10px;border-radius:999px;font-size:12px;font-weight:700;color:${statusColor};background:${statusBg};">
-              ${statusLabel}
+          <td style="padding:12px 0; border-top:1px solid #f0f0f0; vertical-align:top; text-align:right;">
+            <span style="display:inline-block; padding:8px 14px; border-radius:999px; background:${chipBg}; color:${chipColor}; font-weight:700;">
+              ${escapeHtml(statusLabel)}
             </span>
           </td>
         </tr>
       `;
     })
     .join("");
-}
-
-function buildEmailHtml({ record, reconnectUrl }) {
-  const contactName = escapeHtml(record.contact_name || "there");
-  const companyName = escapeHtml(record.company_name || "your system");
-  const failStreakLabel = escapeHtml(String(record.fail_streak || 0));
-  const inboxRows = buildInboxRows(record.inboxes);
 
   return `
-<!doctype html>
-<html>
-  <body style="margin:0;padding:0;background:#f5f7fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#111827;">
-    <div style="padding:32px 16px;">
-      <div style="max-width:720px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:22px;overflow:hidden;box-shadow:0 14px 40px rgba(15,23,42,0.08);">
-        <div style="padding:28px 28px 18px 28px;background:linear-gradient(180deg,#0f172a 0%,#111827 100%);">
-          <div style="font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#cbd5e1;font-weight:700;">Automated Clarity</div>
-          <div style="margin-top:12px;font-size:30px;line-height:1.15;font-weight:800;color:#ffffff;">
-            Action needed to restore inbox protection
-          </div>
-          <div style="margin-top:12px;font-size:15px;line-height:1.6;color:#cbd5e1;">
-            ACX Sentinel detected a disconnected email connection. Monitoring and routing protection may be reduced until the affected inboxes are reconnected.
-          </div>
-        </div>
-
-        <div style="padding:28px;">
-          <div style="font-size:15px;line-height:1.7;color:#374151;">
-            Hi ${contactName},
-          </div>
-
-          <div style="margin-top:14px;font-size:15px;line-height:1.8;color:#374151;">
-            We detected a connection issue affecting <strong style="color:#111827;">${companyName}</strong>.
-            This incident has triggered automatically after <strong style="color:#111827;">${failStreakLabel}</strong> failed recovery check(s).
-          </div>
-
-          <div style="margin-top:22px;border:1px solid #e5e7eb;border-radius:18px;overflow:hidden;">
-            <div style="padding:14px 16px;background:#f8fafc;font-size:13px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#475569;">
-              Inbox status
-            </div>
-            <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-              ${inboxRows}
-            </table>
-          </div>
-
-          <div style="margin-top:24px;padding:18px 18px;border-radius:18px;background:#f8fafc;border:1px solid #e5e7eb;">
-            <div style="font-size:14px;font-weight:700;color:#111827;">What happens next</div>
-            <div style="margin-top:8px;font-size:14px;line-height:1.7;color:#475569;">
-              Use the secure reconnect link below to restore the affected inboxes. This link opens your incident-specific recovery page and is not a general dashboard.
-            </div>
-          </div>
-
-          <div style="margin-top:28px;text-align:center;">
-            <a href="${escapeHtml(
-              reconnectUrl
-            )}" style="display:inline-block;padding:16px 28px;border-radius:14px;background:#111827;color:#ffffff;text-decoration:none;font-size:15px;font-weight:800;">
-              Restore email connection
-            </a>
-          </div>
-
-          <div style="margin-top:16px;font-size:12px;line-height:1.6;color:#6b7280;text-align:center;">
-            This secure link expires automatically and is tied to this incident.
-          </div>
-
-          <div style="margin-top:28px;padding-top:20px;border-top:1px solid #e5e7eb;font-size:12px;line-height:1.7;color:#6b7280;">
-            Incident ID: ${escapeHtml(record.incident_id)}<br>
-            Status: ${escapeHtml(record.sentinel_status)} / ${escapeHtml(record.grant_status)}
-          </div>
-        </div>
-      </div>
+    <div style="border:1px solid #e7e7e7; border-radius:10px; padding:16px;">
+      <div style="font-weight:700; margin:0 0 10px 0;">Inbox status</div>
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+        ${rows}
+      </table>
     </div>
-  </body>
-</html>
   `.trim();
 }
 
-function buildEmailText({ record, reconnectUrl }) {
+function buildActionBlock(reconnectUrl) {
+  return `
+    <div style="border:1px solid #e7e7e7; border-radius:10px; padding:18px; margin-top:10px;">
+      <div style="font-weight:700; margin-bottom:10px;">Restore connection</div>
+      <div style="color:#444; margin-bottom:14px;">
+        Use the secure reconnect link below to restore the affected inboxes. This opens your incident-specific recovery page and is not a general dashboard.
+      </div>
+
+      <a href="${escapeHtml(reconnectUrl)}"
+         style="display:inline-block; padding:12px 22px; background:#0b1220; color:#ffffff; border-radius:8px;
+                text-decoration:none; font-weight:700; border:1px solid #0b1220;">
+        Restore email connection
+      </a>
+
+      <div style="margin-top:10px; color:#777; font-size:12px;">
+        This secure link expires automatically and is tied to this incident.
+      </div>
+    </div>
+  `.trim();
+}
+
+function buildRepairEmailHtml({ severityColor, badge, headline, statusLine, inboxBlock, actionBlock }) {
+  return `
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta charset="utf-8" />
+      </head>
+      <body style="margin:0; padding:0; background:#f4f6f8; font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;">
+
+        <div style="padding:24px 12px;">
+          <div style="max-width:560px; margin:0 auto; background:#ffffff; border-radius:14px; box-shadow:0 6px 20px rgba(0,0,0,.06); overflow:hidden;">
+
+            <div style="height:6px; background:${escapeHtml(severityColor)};"></div>
+
+            <div style="padding:26px;">
+              <div style="margin:0 0 10px 0;">
+                <span style="display:inline-block; padding:6px 10px; border-radius:999px; background:#f3f4f6; color:#111; font-size:12px; font-weight:700;">
+                  ${escapeHtml(badge)}
+                </span>
+              </div>
+
+              <h2 style="margin:0 0 14px 0; font-size:22px; font-weight:700; letter-spacing:-0.2px;">
+                ${escapeHtml(headline)}
+              </h2>
+
+              <p style="margin:0 0 20px 0; color:#555;">
+                ${escapeHtml(statusLine)}
+              </p>
+
+              ${inboxBlock}
+
+              ${actionBlock}
+
+              ${footerBarHtml()}
+            </div>
+          </div>
+        </div>
+
+      </body>
+    </html>
+  `.trim();
+}
+
+function buildRepairEmailText({ record, reconnectUrl, statusLine }) {
   const inboxLines =
     Array.isArray(record.inboxes) && record.inboxes.length
-      ? record.inboxes.map((i) => `- ${i.label}: ${i.email} (${i.status})`).join("\n")
+      ? record.inboxes
+          .map((i) => `- ${i.label || "Inbox"}: ${i.email || i.key || ""} (${i.status || "disconnected"})`)
+          .join("\n")
       : "- Unable to detect inboxes from this incident";
 
   return [
-    "Automated Clarity",
+    "Action needed to restore inbox protection",
     "",
-    "Action needed to restore inbox protection.",
+    statusLine,
     "",
-    `Incident ID: ${record.incident_id}`,
-    `Sentinel status: ${record.sentinel_status}`,
-    `Grant status: ${record.grant_status}`,
-    `Failed checks: ${record.fail_streak}`,
-    "",
-    "Affected inboxes:",
+    "Inbox status:",
     inboxLines,
     "",
     `Reconnect now: ${reconnectUrl}`,
+    "",
+    `Incident ID: ${record.incident_id}`,
+    `Status: ${record.sentinel_status} / ${record.grant_status}`,
+    "",
+    `— ${FOOTER_LABEL}`,
   ].join("\n");
 }
 
 async function sendMailgunEmail({ to, subject, html, text }) {
-  const apiKey = firstNonEmpty(process.env.MAILGUN_API_KEY);
-  const domain = firstNonEmpty(process.env.MAILGUN_DOMAIN);
+  const apiKey = process.env.MAILGUN_API_KEY;
+  const domain = process.env.MAILGUN_DOMAIN;
 
-  if (!apiKey) throw new Error("Missing env var: MAILGUN_API_KEY");
-  if (!domain) throw new Error("Missing env var: MAILGUN_DOMAIN");
+  if (!apiKey) throw new Error("Missing MAILGUN_API_KEY");
+  if (!domain) throw new Error("Missing MAILGUN_DOMAIN");
   if (!normalizeEmail(to)) throw new Error("Missing or invalid recipient email");
 
   const form = new URLSearchParams();
-  form.set("from", `Automated Clarity <${FROM_EMAIL}>`);
+  form.set("from", FROM_EMAIL);
   form.set("to", to);
   form.set("subject", subject);
-  form.set("html", html);
   form.set("text", text);
+  form.set("html", html);
 
-  const res = await fetch(`https://api.mailgun.net/v3/${domain}/messages`, {
+  const mgRes = await fetch(`https://api.mailgun.net/v3/${domain}/messages`, {
     method: "POST",
     headers: {
-      Authorization: `Basic ${Buffer.from(`api:${apiKey}`).toString("base64")}`,
+      Authorization: "Basic " + base64(`api:${apiKey}`),
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: form.toString(),
   });
 
-  const body = await res.text();
-  if (!res.ok) {
-    throw new Error(`Mailgun send failed: ${res.status} ${body}`);
+  const mgText = await mgRes.text();
+
+  if (!mgRes.ok) {
+    throw new Error(`Mailgun send failed: ${mgRes.status} ${safeTrunc(mgText, 1200)}`);
   }
 
-  return body;
+  return mgText;
 }
 
 async function updateGhlContactIfConfigured({ record }) {
@@ -478,18 +503,17 @@ async function updateGhlContactIfConfigured({ record }) {
       "Content-Type": "application/json",
       Accept: "application/json",
     },
-    body: JSON.stringify({
-      customFields,
-    }),
+    body: JSON.stringify({ customFields }),
   });
 
   const text = await res.text();
+
   if (!res.ok) {
     return {
       skipped: false,
       ok: false,
       status: res.status,
-      body: text,
+      body: safeTrunc(text, 1200),
     };
   }
 
@@ -502,25 +526,47 @@ async function updateGhlContactIfConfigured({ record }) {
 exports.handler = async (event) => {
   try {
     if (event.httpMethod && event.httpMethod !== "POST") {
-      return json(405, { ok: false, error: "method_not_allowed" });
+      return json(405, { ok: false, error: "Method not allowed" });
     }
 
-    const body = await readBody(event);
+    const body = parseBody(event.body);
+    console.log("[ACX_SENTINEL_REPAIR_IN]", JSON.stringify(body));
+
     const record = buildIncidentRecord(body);
 
     if (!record.notify_email) {
-      return json(400, {
-        ok: false,
-        error: "missing_recipient_email",
-      });
+      return json(400, { ok: false, error: "missing_recipient_email" });
     }
 
     await storeIncident(record);
 
     const reconnectUrl = buildReconnectUrl(record);
+    const severityColor = severityColorFromStatus(record.sentinel_status);
+    const badge = `Connection issue • ${String(record.sentinel_status || "critical")
+      .charAt(0)
+      .toUpperCase()}${String(record.sentinel_status || "critical").slice(1)}`;
+    const headline = "Action needed to restore inbox protection";
+    const statusLine =
+      "ACX Sentinel detected a disconnected email connection. Monitoring and routing protection may be reduced until the affected inboxes are reconnected.";
+
+    const inboxBlock = buildInboxStatusBlock(record.inboxes);
+    const actionBlock = buildActionBlock(reconnectUrl);
     const subject = "Action needed: reconnect your ACX protected inboxes";
-    const html = buildEmailHtml({ record, reconnectUrl });
-    const text = buildEmailText({ record, reconnectUrl });
+
+    const html = buildRepairEmailHtml({
+      severityColor,
+      badge,
+      headline,
+      statusLine,
+      inboxBlock,
+      actionBlock,
+    });
+
+    const text = buildRepairEmailText({
+      record,
+      reconnectUrl,
+      statusLine,
+    });
 
     await sendMailgunEmail({
       to: record.notify_email,
@@ -562,7 +608,7 @@ exports.handler = async (event) => {
 
     return json(500, {
       ok: false,
-      error: err?.message || "internal_error",
+      error: err?.message || "Unknown error",
     });
   }
 };
