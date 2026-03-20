@@ -9,6 +9,7 @@
 const DEFAULT_API_BASE = "https://services.leadconnectorhq.com";
 const DEFAULT_API_VERSION = "2021-07-28";
 
+// -------------------- helpers --------------------
 function getEnv(name, required = false) {
   const v = process.env[name];
   if (required && (!v || !String(v).trim())) {
@@ -33,6 +34,19 @@ function normalizeKey(s) {
     .replace(/[^a-z0-9_]/g, "_")
     .replace(/_+/g, "_")
     .replace(/^_+|_+$/g, "");
+}
+
+function escapeHtml(str) {
+  return String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function base64(s) {
+  return Buffer.from(String(s), "utf8").toString("base64");
 }
 
 function buildHeaders(token) {
@@ -95,43 +109,99 @@ function todayDateString() {
   return new Date().toISOString().slice(0, 10);
 }
 
+// -------------------- email styling --------------------
+const LOGO_URL = "https://notify.automatedclarity.com/assets/acx-logo-dark.png?v=5";
+const FOOTER_LABEL = "Automated Clarity™ Monitoring";
+
+function footerBarHtml() {
+  return `
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0"
+      style="margin-top:14px; border-collapse:collapse; background:#0b1220; border-radius:10px;">
+      <tr>
+        <td style="padding:14px 16px; vertical-align:middle;">
+          <img src="${escapeHtml(LOGO_URL)}"
+               alt="Automated Clarity"
+               width="140"
+               style="display:block; border:0; outline:none; text-decoration:none; height:auto;" />
+        </td>
+        <td style="padding:14px 16px; vertical-align:middle; text-align:right; color:#9ca3af; font-size:12px; letter-spacing:.2px;">
+          ${escapeHtml(FOOTER_LABEL)}
+        </td>
+      </tr>
+    </table>
+  `.trim();
+}
+
 function renderReconnectEmail({ reconnectUrl, companyName }) {
   const safeCompany = companyName || "your system";
+  const safeReconnectUrl = escapeHtml(reconnectUrl || "");
 
   return `
-<!doctype html>
-<html>
-  <body style="margin:0;padding:0;background:#0f1115;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#e8eaed;">
-    <div style="max-width:640px;margin:0 auto;padding:40px 24px;">
-      <div style="background:#171a21;border:1px solid #2a2f3a;border-radius:18px;padding:36px;">
-        <div style="font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:#8b95a7;margin-bottom:18px;">
-          Automated Clarity
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta charset="utf-8" />
+      </head>
+      <body style="margin:0; padding:0; background:#f4f6f8; font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;">
+        <div style="padding:24px 12px;">
+          <div style="max-width:560px; margin:0 auto; background:#ffffff; border-radius:14px; box-shadow:0 6px 20px rgba(0,0,0,.06); overflow:hidden;">
+
+            <div style="height:6px; background:#f59e0b;"></div>
+
+            <div style="padding:26px;">
+              <div style="margin:0 0 10px 0;">
+                <span style="display:inline-block; padding:6px 10px; border-radius:999px; background:#fef3c7; color:#92400e; font-size:12px; font-weight:700;">
+                  Action Required
+                </span>
+              </div>
+
+              <h2 style="margin:0 0 14px 0; font-size:22px; font-weight:700; letter-spacing:-0.2px; color:#111827;">
+                Inbox connection interrupted
+              </h2>
+
+              <p style="margin:0 0 16px 0; color:#555;">
+                We detected that one of your connected inboxes is no longer syncing with ${escapeHtml(safeCompany)}.
+              </p>
+
+              <p style="margin:0 0 18px 0; color:#555;">
+                This usually happens after a password change, mailbox security update, or a reauthorization requirement.
+              </p>
+
+              <div style="border:1px solid #e7e7e7; border-radius:10px; padding:16px; margin-bottom:18px;">
+                <div style="margin:0 0 10px 0;"><strong>Status:</strong> Connection interrupted</div>
+                <div style="margin:0 0 10px 0;"><strong>Impact:</strong> New email activity may not be monitored until the inbox is reconnected</div>
+                <div style="margin:0;"><strong>Action:</strong> Reconnect the inbox below to restore full operation</div>
+              </div>
+
+              <p style="margin:18px 0 14px 0; color:#111; font-weight:700;">
+                Once reconnected, monitoring will resume automatically.
+              </p>
+
+              <div style="border:1px solid #e7e7e7; border-radius:10px; padding:18px; margin-top:10px;">
+                <div style="font-weight:700; margin-bottom:10px;">Reconnect control</div>
+                <div style="color:#444; margin-bottom:14px;">
+                  Reconnect the affected inbox to restore normal system operation.
+                </div>
+
+                <a href="${safeReconnectUrl}"
+                   style="display:inline-block; padding:12px 22px; background:#fff7ed; color:#9a3412; border-radius:8px;
+                          text-decoration:none; font-weight:700; border:1px solid #fdba74;">
+                  Reconnect inbox
+                </a>
+
+                <div style="margin-top:10px; color:#777; font-size:12px;">
+                  This restores full monitoring automatically.
+                </div>
+              </div>
+
+              ${footerBarHtml()}
+
+            </div>
+          </div>
         </div>
-        <h1 style="margin:0 0 16px 0;font-size:28px;line-height:1.2;color:#ffffff;font-weight:600;">
-          Inbox Connection Lost
-        </h1>
-        <p style="margin:0 0 16px 0;font-size:16px;line-height:1.7;color:#cfd6e4;">
-          We detected that one of your connected inboxes has stopped syncing with ${safeCompany}.
-        </p>
-        <p style="margin:0 0 16px 0;font-size:16px;line-height:1.7;color:#cfd6e4;">
-          This usually happens after a password change, security update, or mailbox reconnection requirement.
-        </p>
-        <p style="margin:0 0 28px 0;font-size:16px;line-height:1.7;color:#cfd6e4;">
-          Reconnect the inbox below to restore normal operation. Once reconnected, your system will resume automatically.
-        </p>
-        <p style="margin:0 0 28px 0;">
-          <a href="${reconnectUrl}" style="display:inline-block;background:#ffffff;color:#111318;text-decoration:none;padding:14px 22px;border-radius:12px;font-weight:600;font-size:15px;">
-            Reconnect Inbox
-          </a>
-        </p>
-        <p style="margin:0;font-size:14px;line-height:1.7;color:#8b95a7;">
-          This was sent automatically by ACX Sentinel.
-        </p>
-      </div>
-    </div>
-  </body>
-</html>
-`;
+      </body>
+    </html>
+  `.trim();
 }
 
 async function sendMailgunEmail({ to, subject, html }) {
@@ -149,7 +219,7 @@ async function sendMailgunEmail({ to, subject, html }) {
   const res = await fetch(`https://api.mailgun.net/v3/${domain}/messages`, {
     method: "POST",
     headers: {
-      Authorization: "Basic " + Buffer.from(`api:${apiKey}`).toString("base64"),
+      Authorization: "Basic " + base64(`api:${apiKey}`),
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: form.toString(),
@@ -165,6 +235,7 @@ async function sendMailgunEmail({ to, subject, html }) {
   return text;
 }
 
+// -------------------- handler --------------------
 exports.handler = async (event) => {
   try {
     const parsed = safeJsonParse(event.body || "");
@@ -242,7 +313,7 @@ exports.handler = async (event) => {
       };
     }
 
-    const subject = "Action Required: Inbox Connection Lost";
+    const subject = "Action Required: Inbox Connection Interrupted";
     const html = renderReconnectEmail({
       reconnectUrl,
       companyName,
