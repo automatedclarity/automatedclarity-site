@@ -102,6 +102,7 @@ exports.handler = async (event) => {
       return json(410, { ok: false, error: "incident_expired" });
     }
 
+    const nowIso = new Date().toISOString();
     const inboxes = Array.isArray(record.inboxes) ? record.inboxes : [];
     let updated = false;
 
@@ -113,6 +114,7 @@ exports.handler = async (event) => {
       if (!matched) return item;
 
       updated = true;
+
       return {
         ...item,
         key: item.key || inbox,
@@ -120,7 +122,7 @@ exports.handler = async (event) => {
         status: "connected",
         grant_id: grantId || item.grant_id || "",
         provider: provider || item.provider || "",
-        reconnected_at: item.reconnected_at || new Date().toISOString(),
+        reconnected_at: item.reconnected_at || nowIso,
       };
     });
 
@@ -128,24 +130,26 @@ exports.handler = async (event) => {
       return json(404, { ok: false, error: "inbox_not_found" });
     }
 
-    const allConnected = nextInboxes.every(
-      (item) => String(item.status || "").toLowerCase() === "connected"
+    const remaining = nextInboxes.filter(
+      (item) => String(item.status || "").toLowerCase() !== "connected"
     );
+
+    const allConnected = remaining.length === 0;
 
     const nextRecord = {
       ...record,
       inboxes: nextInboxes,
       status: allConnected ? "completed" : "open",
       repaired_at: allConnected
-        ? (record.repaired_at || new Date().toISOString())
+        ? (record.repaired_at || nowIso)
         : (record.repaired_at || ""),
-      updated_at: new Date().toISOString(),
+      updated_at: nowIso,
     };
 
     await store.set(key, JSON.stringify(nextRecord), {
       metadata: {
         type: "sentinel_reconnect_incident",
-        incident_id: nextRecord.incident_id,
+        incident_id: nextRecord.incident_id || "",
         contact_id: nextRecord.contact_id || "",
         location_id: nextRecord.location_id || "",
         notify_email: nextRecord.notify_email || "",
@@ -158,18 +162,22 @@ exports.handler = async (event) => {
       return json(500, { ok: false, error: "missing_acx_reconnect_url" });
     }
 
-    const url = new URL(reconnectBase);
-    url.searchParams.set("incident", incidentId);
-    url.searchParams.set("token", token);
-    url.searchParams.set("inbox", inbox);
+    const reconnectUrl = new URL(reconnectBase);
+    reconnectUrl.searchParams.set("incident", incidentId);
+    reconnectUrl.searchParams.set("token", token);
 
-    if (allConnected) {
-      url.searchParams.set("complete", "1");
-    } else {
-      url.searchParams.set("reconnected", "ok");
+    const completionUrl = new URL(reconnectBase);
+    completionUrl.searchParams.set("incident", incidentId);
+    completionUrl.searchParams.set("token", token);
+    completionUrl.searchParams.set("done", "1");
+
+    if (!allConnected) {
+      reconnectUrl.searchParams.set("inbox", inbox);
+      reconnectUrl.searchParams.set("reconnected", "ok");
+      return redirect(reconnectUrl.toString());
     }
 
-    return redirect(url.toString());
+    return redirect(completionUrl.toString());
   } catch (err) {
     console.error("ACX_RECONNECT_COMPLETE_ERROR", {
       message: err?.message,
