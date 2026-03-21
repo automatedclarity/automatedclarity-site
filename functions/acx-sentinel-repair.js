@@ -1,40 +1,21 @@
 // netlify/functions/acx-sentinel-repair.js
 // ACX Sentinel Repair Loop
 // - Creates an incident record in Netlify Blobs
-// - Builds an incident-specific reconnect link from ACX_RECONNECT_URL
+// - Builds incident-specific reconnect links from ACX_RECONNECT_URL
 // - Sends ACX house-style repair email via Mailgun
+// - Uses per-inbox reconnect buttons for clear mobile UX
 // - Optionally updates GHL contact custom fields
-//
-// Locked assumptions:
-// - Netlify is the brain
-// - GHL is trigger layer only
-// - Mailgun is delivery
-// - All outbound sender remains: no-reply@mg.automatedclarity.com
-// - Reconnect page base/path comes from ACX_RECONNECT_URL
-//
-// Required env:
-// - MAILGUN_API_KEY
-// - MAILGUN_DOMAIN
-// - ACX_RECONNECT_URL
-// - NETLIFY_SITE_ID
-// - NETLIFY_BLOBS_TOKEN
-//
-// Optional env:
-// - ACX_BLOBS_STORE (default: "acx-sentinel")
-// - GHL_SENTINEL_TOKEN
-// - GHL_LOCATION_ID
-// - ACX_SENTINEL_LAST_INCIDENT_CF_ID
-// - ACX_SENTINEL_LAST_REPAIR_AT_CF_ID
-// - ACX_SENTINEL_LAST_REPAIR_STATUS_CF_ID
 
 const crypto = require("crypto");
-const querystring = require("querystring");
 const { getStore } = require("@netlify/blobs");
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const GHL_BASE = "https://services.leadconnectorhq.com";
 const BLOBS_STORE_NAME = process.env.ACX_BLOBS_STORE || "acx-sentinel";
 const FROM_EMAIL = "Automated Clarity <no-reply@mg.automatedclarity.com>";
+
+const LOGO_URL = "https://notify.automatedclarity.com/assets/acx-logo-dark.png?v=5";
+const FOOTER_LABEL = "Automated Clarity™ Monitoring";
 
 function json(statusCode, body) {
   return {
@@ -118,9 +99,6 @@ function severityColorFromStatus(status) {
   return "#2563eb";
 }
 
-const LOGO_URL = "https://notify.automatedclarity.com/assets/acx-logo-dark.png?v=5";
-const FOOTER_LABEL = "Automated Clarity™ Monitoring";
-
 function footerBarHtml() {
   return `
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0"
@@ -130,8 +108,7 @@ function footerBarHtml() {
           <img src="${escapeHtml(LOGO_URL)}"
                alt="Automated Clarity"
                width="140"
-               style="display:block; border:0; outline:none; text-decoration:none; height:auto;"
-          />
+               style="display:block; border:0; outline:none; text-decoration:none; height:auto;" />
         </td>
         <td style="padding:14px 16px; vertical-align:middle; text-align:right; color:#9ca3af; font-size:12px; letter-spacing:.2px;">
           ${escapeHtml(FOOTER_LABEL)}
@@ -297,18 +274,25 @@ async function storeIncident(record) {
   return key;
 }
 
-function buildReconnectUrl(record) {
+function buildReconnectUrl(record, inboxKey = "") {
   const reconnectBase = firstNonEmpty(process.env.ACX_RECONNECT_URL);
   if (!reconnectBase) throw new Error("Missing env var: ACX_RECONNECT_URL");
 
   const url = new URL(reconnectBase);
   url.searchParams.set("incident", record.incident_id);
   url.searchParams.set("token", record.token);
+
+  if (inboxKey) {
+    url.searchParams.set("inbox", inboxKey);
+  }
+
   return url.toString();
 }
 
-function buildInboxStatusBlock(inboxes) {
-  if (!Array.isArray(inboxes) || !inboxes.length) {
+function buildInboxStatusBlock(record) {
+  const inboxes = Array.isArray(record.inboxes) ? record.inboxes : [];
+
+  if (!inboxes.length) {
     return `
       <div style="border:1px solid #e7e7e7; border-radius:10px; padding:16px;">
         <div style="font-weight:700; margin:0 0 10px 0;">Inbox status</div>
@@ -318,24 +302,44 @@ function buildInboxStatusBlock(inboxes) {
   }
 
   const rows = inboxes
-    .map((inbox) => {
+    .map((inbox, index) => {
       const status = String(inbox.status || "disconnected").toLowerCase();
-      const statusLabel = status === "connected" ? "Connected" : "Reconnect required";
-      const chipBg = status === "connected" ? "#e6f4ea" : "#fde8e8";
-      const chipColor = status === "connected" ? "#256c3f" : "#b42318";
+      const label = inbox.label || `Inbox ${index + 1}`;
       const email = inbox.email || inbox.key || "";
-      const label = inbox.label || "Inbox";
+      const isConnected = status === "connected";
+      const reconnectUrl = buildReconnectUrl(record, inbox.key || email);
+
+      const statusText = isConnected ? "Connected" : "Reconnect required";
+      const statusColor = isConnected ? "#256c3f" : "#b42318";
+
+      const buttonHtml = isConnected
+        ? `
+          <span style="display:inline-block; padding:12px 18px; background:#e6f4ea; color:#256c3f; border-radius:8px;
+                       font-weight:700; border:1px solid #b7e1c2; white-space:nowrap;">
+            Connected
+          </span>
+        `
+        : `
+          <a href="${escapeHtml(reconnectUrl)}"
+             style="display:inline-block; padding:12px 18px; background:#0b1220; color:#ffffff; border-radius:8px;
+                    text-decoration:none; font-weight:700; border:1px solid #0b1220; white-space:nowrap;">
+            Reconnect
+          </a>
+        `;
 
       return `
         <tr>
-          <td style="padding:12px 0; border-top:1px solid #f0f0f0; vertical-align:top;">
-            <div style="font-weight:700; color:#111;">${escapeHtml(label)}</div>
-            <div style="color:#2563eb; margin-top:4px;">${escapeHtml(maskEmail(email))}</div>
+          <td style="padding:16px 0; border-top:${index === 0 ? "0" : "1px solid #f0f0f0"}; vertical-align:top;">
+            <div style="font-weight:700; color:#111; font-size:16px; line-height:1.35;">${escapeHtml(label)}</div>
+            <div style="color:#2563eb; margin-top:6px; font-size:14px; line-height:1.45;">
+              ${escapeHtml(maskEmail(email))}
+            </div>
+            <div style="margin-top:8px; color:${statusColor}; font-size:13px; line-height:1.4; font-weight:700;">
+              ${escapeHtml(statusText)}
+            </div>
           </td>
-          <td style="padding:12px 0; border-top:1px solid #f0f0f0; vertical-align:top; text-align:right;">
-            <span style="display:inline-block; padding:8px 14px; border-radius:999px; background:${chipBg}; color:${chipColor}; font-weight:700;">
-              ${escapeHtml(statusLabel)}
-            </span>
+          <td style="padding:16px 0; border-top:${index === 0 ? "0" : "1px solid #f0f0f0"}; vertical-align:top; text-align:right; width:1%; white-space:nowrap;">
+            ${buttonHtml}
           </td>
         </tr>
       `;
@@ -344,7 +348,7 @@ function buildInboxStatusBlock(inboxes) {
 
   return `
     <div style="border:1px solid #e7e7e7; border-radius:10px; padding:16px;">
-      <div style="font-weight:700; margin:0 0 10px 0;">Inbox status</div>
+      <div style="font-weight:700; margin:0 0 8px 0; font-size:18px;">Inbox status</div>
       <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
         ${rows}
       </table>
@@ -352,28 +356,21 @@ function buildInboxStatusBlock(inboxes) {
   `.trim();
 }
 
-function buildActionBlock(reconnectUrl) {
+function buildInfoBlock() {
   return `
     <div style="border:1px solid #e7e7e7; border-radius:10px; padding:18px; margin-top:10px;">
-      <div style="font-weight:700; margin-bottom:10px;">Restore connection</div>
-      <div style="color:#444; margin-bottom:14px;">
-        Use the secure reconnect link below to restore the affected inboxes. This opens your incident-specific recovery page and is not a general dashboard.
+      <div style="font-weight:700; margin-bottom:10px; font-size:18px;">What happens next</div>
+      <div style="color:#444; line-height:1.5; font-size:15px;">
+        Use the reconnect button beside any inbox that requires attention. Each button opens your secure, incident-specific recovery flow for that inbox.
       </div>
-
-      <a href="${escapeHtml(reconnectUrl)}"
-         style="display:inline-block; padding:12px 22px; background:#0b1220; color:#ffffff; border-radius:8px;
-                text-decoration:none; font-weight:700; border:1px solid #0b1220;">
-        Restore email connection
-      </a>
-
-      <div style="margin-top:10px; color:#777; font-size:12px;">
-        This secure link expires automatically and is tied to this incident.
+      <div style="margin-top:10px; color:#777; font-size:12px; line-height:1.5;">
+        These secure links expire automatically and are tied to this incident.
       </div>
     </div>
   `.trim();
 }
 
-function buildRepairEmailHtml({ severityColor, badge, headline, statusLine, inboxBlock, actionBlock }) {
+function buildRepairEmailHtml({ severityColor, badge, headline, statusLine, inboxBlock, infoBlock }) {
   return `
     <html>
       <head>
@@ -381,10 +378,8 @@ function buildRepairEmailHtml({ severityColor, badge, headline, statusLine, inbo
         <meta charset="utf-8" />
       </head>
       <body style="margin:0; padding:0; background:#f4f6f8; font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;">
-
         <div style="padding:24px 12px;">
           <div style="max-width:560px; margin:0 auto; background:#ffffff; border-radius:14px; box-shadow:0 6px 20px rgba(0,0,0,.06); overflow:hidden;">
-
             <div style="height:6px; background:${escapeHtml(severityColor)};"></div>
 
             <div style="padding:26px;">
@@ -394,33 +389,35 @@ function buildRepairEmailHtml({ severityColor, badge, headline, statusLine, inbo
                 </span>
               </div>
 
-              <h2 style="margin:0 0 14px 0; font-size:22px; font-weight:700; letter-spacing:-0.2px;">
+              <h2 style="margin:0 0 14px 0; font-size:22px; font-weight:700; letter-spacing:-0.2px; line-height:1.15;">
                 ${escapeHtml(headline)}
               </h2>
 
-              <p style="margin:0 0 20px 0; color:#555;">
+              <p style="margin:0 0 20px 0; color:#555; font-size:15px; line-height:1.5;">
                 ${escapeHtml(statusLine)}
               </p>
 
               ${inboxBlock}
 
-              ${actionBlock}
+              ${infoBlock}
 
               ${footerBarHtml()}
             </div>
           </div>
         </div>
-
       </body>
     </html>
   `.trim();
 }
 
-function buildRepairEmailText({ record, reconnectUrl, statusLine }) {
+function buildRepairEmailText({ record, statusLine }) {
   const inboxLines =
     Array.isArray(record.inboxes) && record.inboxes.length
       ? record.inboxes
-          .map((i) => `- ${i.label || "Inbox"}: ${i.email || i.key || ""} (${i.status || "disconnected"})`)
+          .map((i) => {
+            const key = i.key || i.email || "";
+            return `- ${i.label || "Inbox"}: ${i.email || i.key || ""} (${i.status || "disconnected"})\n  Reconnect: ${buildReconnectUrl(record, key)}`;
+          })
           .join("\n")
       : "- Unable to detect inboxes from this incident";
 
@@ -431,8 +428,6 @@ function buildRepairEmailText({ record, reconnectUrl, statusLine }) {
     "",
     "Inbox status:",
     inboxLines,
-    "",
-    `Reconnect now: ${reconnectUrl}`,
     "",
     `Incident ID: ${record.incident_id}`,
     `Status: ${record.sentinel_status} / ${record.grant_status}`,
@@ -540,17 +535,15 @@ exports.handler = async (event) => {
 
     await storeIncident(record);
 
-    const reconnectUrl = buildReconnectUrl(record);
     const severityColor = severityColorFromStatus(record.sentinel_status);
-    const badge = `Connection issue • ${String(record.sentinel_status || "critical")
-      .charAt(0)
-      .toUpperCase()}${String(record.sentinel_status || "critical").slice(1)}`;
+    const statusWord = String(record.sentinel_status || "critical");
+    const badge = `Connection issue • ${statusWord.charAt(0).toUpperCase()}${statusWord.slice(1)}`;
     const headline = "Action needed to restore inbox protection";
     const statusLine =
       "ACX Sentinel detected a disconnected email connection. Monitoring and routing protection may be reduced until the affected inboxes are reconnected.";
 
-    const inboxBlock = buildInboxStatusBlock(record.inboxes);
-    const actionBlock = buildActionBlock(reconnectUrl);
+    const inboxBlock = buildInboxStatusBlock(record);
+    const infoBlock = buildInfoBlock();
     const subject = "Action needed: reconnect your ACX protected inboxes";
 
     const html = buildRepairEmailHtml({
@@ -559,12 +552,11 @@ exports.handler = async (event) => {
       headline,
       statusLine,
       inboxBlock,
-      actionBlock,
+      infoBlock,
     });
 
     const text = buildRepairEmailText({
       record,
-      reconnectUrl,
       statusLine,
     });
 
@@ -593,7 +585,6 @@ exports.handler = async (event) => {
       sent: true,
       incident_id: record.incident_id,
       sent_to: record.notify_email,
-      reconnect_url: reconnectUrl,
       contact_id: record.contact_id,
       sentinel_status: record.sentinel_status,
       grant_status: record.grant_status,
