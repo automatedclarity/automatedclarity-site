@@ -1,17 +1,22 @@
 // netlify/functions/acx-reconnect-start.js
-// Starts a reconnect flow for a specific inbox inside a Sentinel incident.
-// Validates incident + token from query params, then redirects to the next step.
+// ACX Sentinel reconnect launcher
+// - validates incident, token, inbox
+// - verifies inbox belongs to the incident
+// - redirects directly into the original Nylas Hosted OAuth flow
 //
-// Current locked behavior:
-// - accepts: incident, token, inbox
-// - validates against Netlify Blobs
-// - verifies incident token
-// - verifies inbox belongs to incident
-// - redirects to reconnect page placeholder if valid
+// Required env:
+// - NETLIFY_SITE_ID
+// - NETLIFY_BLOBS_TOKEN
+// - NYLAS_CLIENT_ID
+// - NYLAS_REDIRECT_URI
 //
-// Note:
-// This does NOT launch Nylas OAuth yet unless you wire that URL below.
-// For now it proves the per-inbox flow and removes the missing_params failure.
+// Optional env:
+// - ACX_BLOBS_STORE              default: "acx-sentinel"
+// - NYLAS_API_BASE               default: "https://api.us.nylas.com"
+// - ACX_DEFAULT_CLIENT_ID        default fallback
+// - NYLAS_PROVIDER               if you want to force a provider
+// - NYLAS_ACCESS_TYPE            default: "offline"
+// - NYLAS_PROMPT                 optional, e.g. "select_provider" or "detect"
 
 const { getStore } = require("@netlify/blobs");
 
@@ -47,6 +52,10 @@ function firstNonEmpty(...values) {
   return "";
 }
 
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
 function getStoreManual() {
   const siteID = firstNonEmpty(process.env.NETLIFY_SITE_ID);
   const token = firstNonEmpty(process.env.NETLIFY_BLOBS_TOKEN);
@@ -68,8 +77,70 @@ function isExpired(iso) {
   return Date.now() > t;
 }
 
-function normalizeEmail(value) {
-  return String(value || "").trim().toLowerCase();
+function inferLaneFromEmail(email) {
+  const local = normalizeEmail(email).split("@")[0] || "";
+
+  if (/\b(quote|quotes|estimate|estimates)\b/i.test(local)) return "quotes";
+  if (/\b(billing|invoice|invoices|accounts|payments?)\b/i.test(local)) return "billing";
+  if (/\b(review|reviews|feedback)\b/i.test(local)) return "reviews";
+  if (/\b(dispatch|schedule|scheduling)\b/i.test(local)) return "dispatch";
+  if (/\b(service)\b/i.test(local)) return "service";
+  if (/\b(support|help|office)\b/i.test(local)) return "support";
+
+  return "general";
+}
+
+function buildState({ incidentId, token, inbox, clientId, lane }) {
+  return Buffer.from(
+    JSON.stringify({
+      incident: incidentId,
+      token,
+      inbox,
+      client_id: clientId,
+      lane,
+    }),
+    "utf8"
+  ).toString("base64url");
+}
+
+function buildHostedOauthUrl({ incidentId, token, inbox, clientId, lane }) {
+  const nylasClientId = firstNonEmpty(process.env.NYLAS_CLIENT_ID);
+  const redirectUri = firstNonEmpty(process.env.NYLAS_REDIRECT_URI);
+  const nylasApiBase = firstNonEmpty(process.env.NYLAS_API_BASE, "https://api.us.nylas.com");
+  const provider = firstNonEmpty(process.env.NYLAS_PROVIDER);
+  const accessType = firstNonEmpty(process.env.NYLAS_ACCESS_TYPE, "offline");
+  const prompt = firstNonEmpty(process.env.NYLAS_PROMPT);
+
+  if (!nylasClientId) throw new Error("Missing env var: NYLAS_CLIENT_ID");
+  if (!redirectUri) throw new Error("Missing env var: NYLAS_REDIRECT_URI");
+
+  const url = new URL(`${nylasApiBase.replace(/\/+$/, "")}/v3/connect/auth`);
+  url.searchParams.set("client_id", nylasClientId);
+  url.searchParams.set("redirect_uri", redirectUri);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("access_type", accessType);
+
+  const state = buildState({
+    incidentId,
+    token,
+    inbox,
+    clientId,
+    lane,
+  });
+  url.searchParams.set("state", state);
+
+  if (provider) url.searchParams.set("provider", provider);
+
+  // Helps provider selection / account hinting without forcing behavior.
+  if (inbox) {
+    url.searchParams.set("login_hint", inbox);
+  }
+
+  if (prompt) {
+    url.searchParams.set("prompt", prompt);
+  }
+
+  return url.toString();
 }
 
 exports.handler = async (event) => {
@@ -81,7 +152,7 @@ exports.handler = async (event) => {
     const qs = event.queryStringParameters || {};
     const incidentId = firstNonEmpty(qs.incident);
     const token = firstNonEmpty(qs.token);
-    const inbox = firstNonEmpty(qs.inbox);
+    const inbox = normalizeEmail(firstNonEmpty(qs.inbox));
 
     if (!incidentId || !token || !inbox) {
       return json(400, { ok: false, error: "missing_params" });
@@ -115,36 +186,41 @@ exports.handler = async (event) => {
     }
 
     const inboxes = Array.isArray(record.inboxes) ? record.inboxes : [];
-    const normalizedInbox = normalizeEmail(inbox);
-
     const matchedInbox = inboxes.find((item) => {
       const itemKey = normalizeEmail(item.key || "");
       const itemEmail = normalizeEmail(item.email || "");
-      return normalizedInbox === itemKey || normalizedInbox === itemEmail;
+      return inbox === itemKey || inbox === itemEmail;
     });
 
     if (!matchedInbox) {
       return json(404, { ok: false, error: "inbox_not_found" });
     }
 
-    // Placeholder next step:
-    // Replace this with your real Nylas reconnect/OAuth URL builder later.
-    //
-    // For now, redirect back to reconnect page with a success-style marker so the
-    // flow proves end-to-end and confirms the selected inbox is valid.
+    const clientId =
+      firstNonEmpty(record.client_id, qs.client_id, process.env.ACX_DEFAULT_CLIENT_ID) ||
+      "automatedclarity";
 
-    const reconnectBase = firstNonEmpty(process.env.ACX_RECONNECT_URL);
-    if (!reconnectBase) {
-      return json(500, { ok: false, error: "missing_reconnect_url" });
-    }
+    const lane =
+      firstNonEmpty(matchedInbox.lane, record.lane) ||
+      inferLaneFromEmail(matchedInbox.email || matchedInbox.key || inbox);
 
-    const url = new URL(reconnectBase);
-    url.searchParams.set("incident", incidentId);
-    url.searchParams.set("token", token);
-    url.searchParams.set("inbox", normalizedInbox);
-    url.searchParams.set("start", "ok");
+    const authUrl = buildHostedOauthUrl({
+      incidentId,
+      token,
+      inbox,
+      clientId,
+      lane,
+    });
 
-    return redirect(url.toString());
+    console.log("ACX_RECONNECT_START_REDIRECT", {
+      incident_id: incidentId,
+      inbox,
+      client_id: clientId,
+      lane,
+      redirect_uri: process.env.NYLAS_REDIRECT_URI || "",
+    });
+
+    return redirect(authUrl);
   } catch (err) {
     console.error("ACX_RECONNECT_START_ERROR", {
       message: err?.message,
