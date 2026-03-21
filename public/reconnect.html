@@ -285,7 +285,8 @@
         incident: q.get("incident") || "",
         token: q.get("token") || "",
         inbox: q.get("inbox") || "",
-        start: q.get("start") || ""
+        reconnected: q.get("reconnected") || "",
+        complete: q.get("complete") || ""
       };
     }
 
@@ -303,16 +304,30 @@
       content.innerHTML = `<div>${esc(message)}</div>`;
     }
 
-    function buildStartNotice(p) {
-      if (p.start !== "ok") return "";
-      return `
-        <div class="box success">
-          <div class="box-title" style="margin-bottom:8px;">Reconnect started</div>
-          <div class="note">
-            Your inbox reconnect flow was opened successfully. Complete the reconnect step, then return here if needed.
+    function buildNotice(p) {
+      if (p.complete === "1") {
+        return `
+          <div class="box success">
+            <div class="box-title" style="margin-bottom:8px;">Connection restored</div>
+            <div class="note">
+              All affected inboxes for this incident are now connected. ACX Sentinel monitoring has been restored.
+            </div>
           </div>
-        </div>
-      `;
+        `;
+      }
+
+      if (p.reconnected === "ok") {
+        return `
+          <div class="box success">
+            <div class="box-title" style="margin-bottom:8px;">Inbox reconnected</div>
+            <div class="note">
+              Your selected inbox was reconnected successfully. Connect any remaining inboxes below if more action is still required.
+            </div>
+          </div>
+        `;
+      }
+
+      return "";
     }
 
     function renderIncident(data, p) {
@@ -351,12 +366,12 @@
         `;
       }).join("");
 
-      const startNotice = buildStartNotice(p);
+      const notice = buildNotice(p);
 
       const content = document.getElementById("content");
       content.className = "";
       content.innerHTML = `
-        ${startNotice}
+        ${notice}
         <div class="box">
           <div class="box-title">Inbox status</div>
           ${rows}
