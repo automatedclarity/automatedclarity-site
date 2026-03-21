@@ -1,23 +1,3 @@
-// netlify/functions/acx-reconnect-start.js
-// ACX Sentinel reconnect launcher
-// - validates incident, token, inbox
-// - verifies inbox belongs to the incident
-// - redirects directly into the original Nylas Hosted OAuth flow
-//
-// Required env:
-// - NETLIFY_SITE_ID
-// - NETLIFY_BLOBS_TOKEN
-// - NYLAS_CLIENT_ID
-// - NYLAS_REDIRECT_URI
-//
-// Optional env:
-// - ACX_BLOBS_STORE              default: "acx-sentinel"
-// - NYLAS_API_BASE               default: "https://api.us.nylas.com"
-// - ACX_DEFAULT_CLIENT_ID        default fallback
-// - NYLAS_PROVIDER               if you want to force a provider
-// - NYLAS_ACCESS_TYPE            default: "offline"
-// - NYLAS_PROMPT                 optional, e.g. "select_provider" or "detect"
-
 const { getStore } = require("@netlify/blobs");
 
 const BLOBS_STORE_NAME = process.env.ACX_BLOBS_STORE || "acx-sentinel";
@@ -90,59 +70,6 @@ function inferLaneFromEmail(email) {
   return "general";
 }
 
-function buildState({ incidentId, token, inbox, clientId, lane }) {
-  return Buffer.from(
-    JSON.stringify({
-      incident: incidentId,
-      token,
-      inbox,
-      client_id: clientId,
-      lane,
-    }),
-    "utf8"
-  ).toString("base64url");
-}
-
-function buildHostedOauthUrl({ incidentId, token, inbox, clientId, lane }) {
-  const nylasClientId = firstNonEmpty(process.env.NYLAS_CLIENT_ID);
-  const redirectUri = firstNonEmpty(process.env.NYLAS_REDIRECT_URI);
-  const nylasApiBase = firstNonEmpty(process.env.NYLAS_API_BASE, "https://api.us.nylas.com");
-  const provider = firstNonEmpty(process.env.NYLAS_PROVIDER);
-  const accessType = firstNonEmpty(process.env.NYLAS_ACCESS_TYPE, "offline");
-  const prompt = firstNonEmpty(process.env.NYLAS_PROMPT);
-
-  if (!nylasClientId) throw new Error("Missing env var: NYLAS_CLIENT_ID");
-  if (!redirectUri) throw new Error("Missing env var: NYLAS_REDIRECT_URI");
-
-  const url = new URL(`${nylasApiBase.replace(/\/+$/, "")}/v3/connect/auth`);
-  url.searchParams.set("client_id", nylasClientId);
-  url.searchParams.set("redirect_uri", redirectUri);
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("access_type", accessType);
-
-  const state = buildState({
-    incidentId,
-    token,
-    inbox,
-    clientId,
-    lane,
-  });
-  url.searchParams.set("state", state);
-
-  if (provider) url.searchParams.set("provider", provider);
-
-  // Helps provider selection / account hinting without forcing behavior.
-  if (inbox) {
-    url.searchParams.set("login_hint", inbox);
-  }
-
-  if (prompt) {
-    url.searchParams.set("prompt", prompt);
-  }
-
-  return url.toString();
-}
-
 exports.handler = async (event) => {
   try {
     if (event.httpMethod && event.httpMethod !== "GET") {
@@ -196,6 +123,11 @@ exports.handler = async (event) => {
       return json(404, { ok: false, error: "inbox_not_found" });
     }
 
+    const notifyAuthStartBase = firstNonEmpty(process.env.ACX_NOTIFY_AUTH_START_URL);
+    if (!notifyAuthStartBase) {
+      return json(500, { ok: false, error: "missing_notify_auth_start_url" });
+    }
+
     const clientId =
       firstNonEmpty(record.client_id, qs.client_id, process.env.ACX_DEFAULT_CLIENT_ID) ||
       "automatedclarity";
@@ -204,23 +136,22 @@ exports.handler = async (event) => {
       firstNonEmpty(matchedInbox.lane, record.lane) ||
       inferLaneFromEmail(matchedInbox.email || matchedInbox.key || inbox);
 
-    const authUrl = buildHostedOauthUrl({
-      incidentId,
-      token,
-      inbox,
-      clientId,
-      lane,
-    });
+    const url = new URL(notifyAuthStartBase);
+    url.searchParams.set("incident", incidentId);
+    url.searchParams.set("token", token);
+    url.searchParams.set("inbox", inbox);
+    url.searchParams.set("client_id", clientId);
+    url.searchParams.set("lane", lane);
 
     console.log("ACX_RECONNECT_START_REDIRECT", {
       incident_id: incidentId,
       inbox,
       client_id: clientId,
       lane,
-      redirect_uri: process.env.NYLAS_REDIRECT_URI || "",
+      notify_auth_start: notifyAuthStartBase,
     });
 
-    return redirect(authUrl);
+    return redirect(url.toString());
   } catch (err) {
     console.error("ACX_RECONNECT_START_ERROR", {
       message: err?.message,
