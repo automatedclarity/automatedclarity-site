@@ -24,6 +24,7 @@
     }
 
     * { box-sizing:border-box; }
+
     body{
       margin:0;
       background:var(--bg);
@@ -82,12 +83,18 @@
       border-radius:10px;
       padding:18px;
       margin-top:14px;
+      background:#fff;
     }
 
     .box.soft{
       border-style:dashed;
       color:#667085;
       background:#fafafa;
+    }
+
+    .box.success{
+      border-color:#b7e1c2;
+      background:#f6fbf7;
     }
 
     .box-title{
@@ -277,7 +284,8 @@
       return {
         incident: q.get("incident") || "",
         token: q.get("token") || "",
-        inbox: q.get("inbox") || ""
+        inbox: q.get("inbox") || "",
+        start: q.get("start") || ""
       };
     }
 
@@ -290,8 +298,21 @@
     }
 
     function renderError(message) {
-      document.getElementById("content").className = "box soft";
-      document.getElementById("content").innerHTML = `<div>${esc(message)}</div>`;
+      const content = document.getElementById("content");
+      content.className = "box soft";
+      content.innerHTML = `<div>${esc(message)}</div>`;
+    }
+
+    function buildStartNotice(p) {
+      if (p.start !== "ok") return "";
+      return `
+        <div class="box success">
+          <div class="box-title" style="margin-bottom:8px;">Reconnect started</div>
+          <div class="note">
+            Your inbox reconnect flow was opened successfully. Complete the reconnect step, then return here if needed.
+          </div>
+        </div>
+      `;
     }
 
     function renderIncident(data, p) {
@@ -330,13 +351,23 @@
         `;
       }).join("");
 
-      document.getElementById("content").className = "box";
-      document.getElementById("content").innerHTML = `
-        <div class="box-title">Inbox status</div>
-        ${rows}
+      const startNotice = buildStartNotice(p);
+
+      const content = document.getElementById("content");
+      content.className = "";
+      content.innerHTML = `
+        ${startNotice}
+        <div class="box">
+          <div class="box-title">Inbox status</div>
+          ${rows}
+        </div>
       `;
 
+      const existingInfo = document.getElementById("what-happens-next");
+      if (existingInfo) existingInfo.remove();
+
       const info = document.createElement("div");
+      info.id = "what-happens-next";
       info.className = "box";
       info.innerHTML = `
         <div class="box-title">What happens next</div>
@@ -348,7 +379,7 @@
           These secure links expire automatically and are tied to this incident.
         </div>
       `;
-      document.getElementById("content").after(info);
+      content.after(info);
     }
 
     async function init() {
