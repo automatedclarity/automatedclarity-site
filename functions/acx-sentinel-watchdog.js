@@ -1,8 +1,9 @@
 // netlify/functions/acx-sentinel-watchdog.js
 // ACX Sentinel — Signal Watchdog (5-min loop)
-// + Grant detection (added)
-// + Recovery detection (added)
-// + Manual Blobs config (unchanged)
+// + Grant detection
+// + Recovery detection
+// + Incident confirmation after healthy revalidation
+// + Manual Blobs config
 // + ZERO architecture drift
 
 let getStore = null;
@@ -43,6 +44,10 @@ function normalizeKey(s) {
     .replace(/[^a-z0-9_]/g, "_")
     .replace(/_+/g, "_")
     .replace(/^_+|_+$/g, "");
+}
+
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
 }
 
 function coerceNumber(val, fallback = 0) {
@@ -160,16 +165,21 @@ async function postSentinel(payload) {
   return parsed.value || {};
 }
 
+function getSentinelStore() {
+  if (!getStore) throw new Error("Netlify Blobs unavailable");
+
+  return getStore({
+    name: getEnv("ACX_BLOBS_STORE") || "acx-sentinel",
+    siteID: getEnv("NETLIFY_SITE_ID", true),
+    token: getEnv("NETLIFY_BLOBS_TOKEN", true),
+  });
+}
+
 async function appendSentinelEvent(event) {
   if (!getStore) return false;
 
   try {
-    const store = getStore({
-      name: "acx-sentinel",
-      siteID: process.env.NETLIFY_SITE_ID,
-      token: process.env.NETLIFY_BLOBS_TOKEN,
-    });
-
+    const store = getSentinelStore();
     const key = `sentinel/${new Date().toISOString().slice(0, 10)}.ndjson`;
     const existing = (await store.get(key, { type: "text" })) || "";
     await store.set(key, existing + JSON.stringify(event) + "\n");
@@ -182,6 +192,100 @@ async function appendSentinelEvent(event) {
 
 function buildRunId(contactId) {
   return `watchdog-${Date.now()}-${contactId}`;
+}
+
+// -------------------- INCIDENT CONFIRMATION --------------------
+async function listAllBlobs(store, prefix) {
+  const out = [];
+  let cursor;
+
+  do {
+    const page = await store.list({ prefix, cursor });
+    if (page?.blobs?.length) out.push(...page.blobs);
+    cursor = page?.cursor;
+  } while (cursor);
+
+  return out;
+}
+
+async function confirmRecoveredIncidentsForContact({
+  contactId,
+  locationId,
+  nowIso,
+}) {
+  try {
+    const store = getSentinelStore();
+    const blobs = await listAllBlobs(store, "sentinel/incidents/");
+    let confirmedCount = 0;
+
+    for (const blob of blobs) {
+      const raw = await store.get(blob.key, { type: "text" });
+      if (!raw) continue;
+
+      let incident;
+      try {
+        incident = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+
+      if (!incident || String(incident.contact_id || "") !== String(contactId || "")) {
+        continue;
+      }
+
+      if (
+        incident.location_id &&
+        String(incident.location_id) !== String(locationId || "")
+      ) {
+        continue;
+      }
+
+      const status = String(incident.status || "").toLowerCase();
+      if (status === "confirmed") continue;
+      if (status !== "completed" && status !== "open") continue;
+
+      const inboxes = Array.isArray(incident.inboxes) ? incident.inboxes : [];
+      if (!inboxes.length) continue;
+
+      const allConnected = inboxes.every(
+        (item) => String(item.status || "").toLowerCase() === "connected"
+      );
+
+      if (!allConnected) continue;
+
+      const nextIncident = {
+        ...incident,
+        status: "confirmed",
+        confirmed_at: incident.confirmed_at || nowIso,
+        confirmation_reason: "watchdog_revalidated",
+        updated_at: nowIso,
+      };
+
+      await store.set(blob.key, JSON.stringify(nextIncident), {
+        metadata: {
+          type: "sentinel_reconnect_incident",
+          incident_id: nextIncident.incident_id || "",
+          contact_id: nextIncident.contact_id || "",
+          location_id: nextIncident.location_id || "",
+          notify_email: nextIncident.notify_email || "",
+          status: nextIncident.status || "confirmed",
+        },
+      });
+
+      console.log("WATCHDOG_INCIDENT_CONFIRMED", {
+        incident_id: nextIncident.incident_id,
+        contact_id: nextIncident.contact_id,
+        confirmed_at: nextIncident.confirmed_at,
+      });
+
+      confirmedCount += 1;
+    }
+
+    return { ok: true, confirmed_count: confirmedCount };
+  } catch (err) {
+    console.error("WATCHDOG_CONFIRM_INCIDENTS_ERROR", err.message);
+    return { ok: false, confirmed_count: 0, error: err.message };
+  }
 }
 
 // -------------------- MAIN --------------------
@@ -240,6 +344,19 @@ exports.handler = async () => {
         // 🟢 RECOVERY
         const recovered = prevFail > 0 && !fail;
 
+        let recoveryConfirmation = {
+          ok: true,
+          confirmed_count: 0,
+        };
+
+        if (recovered) {
+          recoveryConfirmation = await confirmRecoveredIncidentsForContact({
+            contactId,
+            locationId,
+            nowIso: isoNow(),
+          });
+        }
+
         const eventRecord = {
           ts: isoNow(),
           run_id: buildRunId(contactId),
@@ -255,19 +372,17 @@ exports.handler = async () => {
             : fail
             ? "signal_stale"
             : "signal_ok",
+          recovery_confirmation: recoveryConfirmation,
         };
 
         await appendSentinelEvent(eventRecord);
-
         await postSentinel(eventRecord);
-
       } catch (innerErr) {
         console.error("WATCHDOG_CONTACT_ERROR", innerErr.message);
       }
     }
 
     return { statusCode: 200, body: JSON.stringify({ ok: true }) };
-
   } catch (err) {
     console.error("WATCHDOG_FATAL", err.message);
     return { statusCode: 500, body: JSON.stringify({ ok: false }) };
