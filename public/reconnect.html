@@ -9,13 +9,11 @@
       --bg:#f4f6f8;
       --card:#ffffff;
       --text:#0f172a;
-      --muted:#667085;
       --line:#e7e7e7;
       --line-soft:#ececec;
       --warn:#f59e0b;
       --warn-bg:#f7e7b2;
       --danger:#b42318;
-      --danger-bg:#fde8e8;
       --ok:#256c3f;
       --ok-bg:#e6f4ea;
       --navy:#0b1220;
@@ -32,10 +30,7 @@
       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
     }
 
-    .wrap{
-      padding:24px 12px;
-    }
-
+    .wrap{ padding:24px 12px; }
     .card{
       max-width:560px;
       margin:0 auto;
@@ -44,16 +39,8 @@
       box-shadow:var(--shadow);
       overflow:hidden;
     }
-
-    .topbar{
-      height:6px;
-      background:var(--warn);
-    }
-
-    .inner{
-      padding:26px;
-    }
-
+    .topbar{ height:6px; background:var(--warn); }
+    .inner{ padding:26px; }
     .badge{
       display:inline-block;
       padding:6px 10px;
@@ -63,21 +50,18 @@
       font-size:12px;
       font-weight:700;
     }
-
     h1{
       margin:18px 0 16px 0;
       font-size:30px;
       line-height:1.1;
       letter-spacing:-0.3px;
     }
-
     .lead{
       margin:0 0 24px 0;
       color:#475467;
       font-size:16px;
       line-height:1.6;
     }
-
     .box{
       border:1px solid var(--line);
       border-radius:10px;
@@ -85,24 +69,20 @@
       margin-top:14px;
       background:#fff;
     }
-
     .box.soft{
       border-style:dashed;
       color:#667085;
       background:#fafafa;
     }
-
     .box.success{
       border-color:#b7e1c2;
       background:#f6fbf7;
     }
-
     .box-title{
       font-weight:800;
       font-size:18px;
       margin:0 0 12px 0;
     }
-
     .inbox{
       display:flex;
       gap:14px;
@@ -111,24 +91,20 @@
       padding:16px 0;
       border-top:1px solid var(--line-soft);
     }
-
     .inbox:first-of-type{
       border-top:0;
       padding-top:6px;
     }
-
     .inbox-left{
       min-width:0;
       flex:1 1 auto;
     }
-
     .inbox-label{
       font-size:16px;
       font-weight:800;
       line-height:1.35;
       word-break:break-word;
     }
-
     .inbox-email{
       margin-top:6px;
       color:#2563eb;
@@ -136,14 +112,12 @@
       line-height:1.45;
       word-break:break-word;
     }
-
     .status{
       margin-top:8px;
       font-size:13px;
       line-height:1.4;
       font-weight:800;
     }
-
     .status.danger{ color:var(--danger); }
     .status.ok{ color:var(--ok); }
 
@@ -152,7 +126,6 @@
       width:auto;
       white-space:nowrap;
     }
-
     .btn{
       display:inline-block;
       padding:12px 18px;
@@ -164,27 +137,23 @@
       color:#fff;
       cursor:pointer;
     }
-
     .btn.ok{
       background:var(--ok-bg);
       border-color:#b7e1c2;
       color:var(--ok);
       cursor:default;
     }
-
     .note{
       color:#444;
       line-height:1.6;
       font-size:15px;
     }
-
     .tiny{
       margin-top:10px;
       color:#777;
       font-size:12px;
       line-height:1.5;
     }
-
     .footer{
       margin-top:14px;
       width:100%;
@@ -193,12 +162,10 @@
       border-radius:10px;
       overflow:hidden;
     }
-
     .footer td{
       padding:14px 16px;
       vertical-align:middle;
     }
-
     .footer .right{
       text-align:right;
       color:#9ca3af;
@@ -206,25 +173,17 @@
       letter-spacing:.2px;
     }
 
-    .loading{
-      color:#667085;
-    }
-
     @media (max-width: 640px){
       .inner{ padding:22px; }
       h1{ font-size:24px; }
       .lead{ font-size:15px; }
 
-      .inbox{
-        display:block;
-      }
-
+      .inbox{ display:block; }
       .inbox-right{
         margin-top:12px;
         width:100%;
         white-space:normal;
       }
-
       .btn{
         display:block;
         width:100%;
@@ -241,15 +200,15 @@
       <div class="inner">
         <span class="badge">Recovery Access</span>
 
-        <h1>Reconnect affected inboxes</h1>
+        <h1 id="page-title">Reconnect affected inboxes</h1>
 
-        <p class="lead">
+        <p id="page-lead" class="lead">
           We detected a connection interruption affecting your ACX monitoring layer.
           Review the affected inboxes below and reconnect any that require attention.
         </p>
 
         <div id="content" class="box soft">
-          <div class="loading">Loading reconnect incident…</div>
+          Loading reconnect incident…
         </div>
 
         <table class="footer" role="presentation" cellspacing="0" cellpadding="0">
@@ -286,7 +245,7 @@
         token: q.get("token") || "",
         inbox: q.get("inbox") || "",
         reconnected: q.get("reconnected") || "",
-        complete: q.get("complete") || ""
+        done: q.get("done") || ""
       };
     }
 
@@ -301,36 +260,32 @@
     function renderError(message) {
       const content = document.getElementById("content");
       content.className = "box soft";
-      content.innerHTML = `<div>${esc(message)}</div>`;
+      content.innerHTML = esc(message);
     }
 
-    function buildNotice(p) {
-      if (p.complete === "1") {
-        return `
-          <div class="box success">
-            <div class="box-title" style="margin-bottom:8px;">Connection restored</div>
-            <div class="note">
-              All affected inboxes for this incident are now connected. ACX Sentinel monitoring has been restored.
-            </div>
-          </div>
-        `;
-      }
+    function renderCompleteView() {
+      document.getElementById("page-title").textContent = "Reconnect received";
+      document.getElementById("page-lead").textContent =
+        "All required inboxes for this incident have been reconnected. ACX Sentinel is now verifying monitoring health in the background.";
 
-      if (p.reconnected === "ok") {
-        return `
-          <div class="box success">
-            <div class="box-title" style="margin-bottom:8px;">Inbox reconnected</div>
-            <div class="note">
-              Your selected inbox was reconnected successfully. Connect any remaining inboxes below if more action is still required.
-            </div>
+      const content = document.getElementById("content");
+      content.className = "";
+      content.innerHTML = `
+        <div class="box success">
+          <div class="box-title" style="margin-bottom:8px;">No further action needed right now</div>
+          <div class="note">
+            Your reconnect step was completed successfully. You can now close this page.
           </div>
-        `;
-      }
-
-      return "";
+        </div>
+      `;
     }
 
     function renderIncident(data, p) {
+      if (p.done === "1") {
+        renderCompleteView();
+        return;
+      }
+
       const incident = data.incident || {};
       const inboxes = Array.isArray(incident.inboxes) ? incident.inboxes : [];
 
@@ -366,7 +321,16 @@
         `;
       }).join("");
 
-      const notice = buildNotice(p);
+      const notice = p.reconnected === "ok"
+        ? `
+          <div class="box success">
+            <div class="box-title" style="margin-bottom:8px;">Inbox reconnected</div>
+            <div class="note">
+              Your selected inbox was reconnected successfully. Complete any remaining inboxes below if more action is still required.
+            </div>
+          </div>
+        `
+        : "";
 
       const content = document.getElementById("content");
       content.className = "";
@@ -376,25 +340,17 @@
           <div class="box-title">Inbox status</div>
           ${rows}
         </div>
-      `;
-
-      const existingInfo = document.getElementById("what-happens-next");
-      if (existingInfo) existingInfo.remove();
-
-      const info = document.createElement("div");
-      info.id = "what-happens-next";
-      info.className = "box";
-      info.innerHTML = `
-        <div class="box-title">What happens next</div>
-        <div class="note">
-          Use the reconnect button beside any inbox that requires attention.
-          Each button opens your secure, incident-specific recovery flow for that inbox.
-        </div>
-        <div class="tiny">
-          These secure links expire automatically and are tied to this incident.
+        <div class="box">
+          <div class="box-title">What happens next</div>
+          <div class="note">
+            Use the reconnect button beside any inbox that requires attention.
+            Each button opens your secure, incident-specific recovery flow for that inbox.
+          </div>
+          <div class="tiny">
+            These secure links expire automatically and are tied to this incident.
+          </div>
         </div>
       `;
-      content.after(info);
     }
 
     async function init() {
