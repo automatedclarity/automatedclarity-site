@@ -166,6 +166,7 @@
       background:var(--navy);
       color:#fff;
       cursor:pointer;
+      transition:opacity .15s ease;
     }
 
     .btn.ok{
@@ -173,6 +174,20 @@
       border-color:#b7e1c2;
       color:var(--success);
       cursor:default;
+    }
+
+    .btn.loading{
+      opacity:.88;
+      pointer-events:none;
+      cursor:wait;
+    }
+
+    .reconnect-helper{
+      margin-top:10px;
+      color:#667085;
+      font-size:13px;
+      line-height:1.4;
+      white-space:normal;
     }
 
     .note{
@@ -326,6 +341,33 @@
       `;
     }
 
+    function bindReconnectButtons() {
+      const buttons = document.querySelectorAll(".reconnect-btn");
+
+      buttons.forEach((btn) => {
+        btn.addEventListener("click", function (e) {
+          e.preventDefault();
+
+          if (btn.dataset.loading === "1") return;
+
+          btn.dataset.loading = "1";
+          btn.classList.add("loading");
+          btn.textContent = "Opening secure reconnect…";
+
+          let helper = btn.parentElement.querySelector(".reconnect-helper");
+          if (!helper) {
+            helper = document.createElement("div");
+            helper.className = "reconnect-helper";
+            helper.textContent = "Please wait. This may take a moment.";
+            btn.parentElement.appendChild(helper);
+          }
+
+          const href = btn.getAttribute("data-href") || btn.getAttribute("href");
+          window.location.href = href;
+        });
+      });
+    }
+
     function renderIncident(data, p) {
       if (p.done === "1") {
         renderCompleteView();
@@ -347,10 +389,11 @@
         const selected = Boolean(inbox.selected);
         const statusText = needsReconnect ? "Reconnect required" : "Connected";
         const statusClass = needsReconnect ? "danger" : "ok";
+        const href = reconnectHref(p, inbox.key || inbox.email_raw || "");
 
         let actionHtml = `<span class="btn ok">Connected</span>`;
         if (needsReconnect) {
-          actionHtml = `<a class="btn" href="${esc(reconnectHref(p, inbox.key || inbox.email_raw || ""))}">Reconnect</a>`;
+          actionHtml = `<a class="btn reconnect-btn" data-href="${esc(href)}" href="${esc(href)}">Reconnect</a>`;
         }
 
         return `
@@ -397,6 +440,8 @@
           </div>
         </div>
       `;
+
+      bindReconnectButtons();
     }
 
     async function init() {
